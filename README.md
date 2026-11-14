@@ -19,6 +19,58 @@ them. Build outputs are written to `build/`. Files are created as user
 `1000:1000`; if needed, set `UID` and `GID` to your own values before running
 Compose.
 
+### Build and package
+
+Run the Python helper from the host to build all projects for all five
+platforms and create a single ZIP:
+
+```sh
+python3 tools/build_pack.py
+python3 tools/build_pack.py --output build/release.zip
+```
+
+The helper builds the Docker build image as needed and runs `make all`.
+The default archive is `build/retrolities.zip`. It contains only `.EXE` and
+`.COM` files from `build/<platform>/bin/`, all at the ZIP root. Unique 8.3
+names (such as `NETBOLTD.EXE`) are preserved. Duplicate names receive short
+platform suffixes: `D`, `16`, `9X`, `NT`, `64`; stems are shortened to keep
+8.3 format (for example, `HELLO16.EXE` and `PICASSNT.EXE`). Any remaining
+collisions receive a numeric suffix. Longer names are shortened while
+retaining platform suffixes (for example, `NETBOLT64.EXE` becomes
+`NETBOL64.EXE`). Renaming affects only ZIP entries, not
+the original build files.
+
+Existing build files are retained; no clean is performed. The ZIP is
+replaced only after both the build and packaging succeed.
+
+| Option | Purpose |
+|---|---|
+| `-o`, `--output PATH` | ZIP destination |
+| `-p`, `--platforms PLATFORM ...` | Build and package selected platforms: `dos`, `win16`, `win9x`, `winnt`, `win64` |
+| `-e`, `--executables GLOB ...` | Package selected original filenames, case-insensitively; quote wildcards |
+| `--skip-build` | Package existing executables without Docker or compilers |
+| `--local` | Build with the locally configured toolchain instead of Docker |
+| `--long-names` | Use full platform suffixes for duplicates, such as `HELLO-win16.EXE` |
+| `--compression deflated\|stored` | Select compression (default: `deflated`) |
+| `--compression-level 0-9` | Deflate level (default: `9`) |
+| `-v`, `--verbose` | Show full compiler/linker commands |
+
+```sh
+python3 tools/build_pack.py --platforms dos win16 --output build/retro.zip
+python3 tools/build_pack.py --skip-build --executables 'NETBOLT*.EXE'
+python3 tools/build_pack.py --skip-build --long-names --compression stored
+```
+
+Executable filters affect packaging only; all projects for the selected
+platforms are still built. `--skip-build` can include stale binaries left
+by earlier builds.
+
+Inside the build container (or with the toolchains configured locally), use:
+
+```sh
+python3 tools/build_pack.py --local
+```
+
 ## Utilities
 
 | Utility | Platforms | Description |
