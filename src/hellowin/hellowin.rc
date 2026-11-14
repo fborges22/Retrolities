@@ -1,0 +1,8 @@
+#include <windows.h>
+#include "resource.h"
+
+STRINGTABLE
+BEGIN
+    IDS_TITLE,  "Retrolities"
+    IDS_FORMAT, "Hello from Retrolities!\n\nTarget: %s (%d-bit)\nHost: %s"
+END
