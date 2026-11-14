@@ -262,3 +262,7 @@ docker compose run --rm test tests/gui.sh \
 
 The GUI script provides `shot`, `click`, `dclick`, `drag` and `key` helpers to
 the scripted session.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
