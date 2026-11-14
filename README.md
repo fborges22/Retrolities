@@ -1,192 +1,205 @@
 # Retrolities
 
-Utilities for MS-DOS, Windows 3.x, Windows 9x and Windows NT/2000, cross-built
-on Linux with the [Open Watcom v2](https://github.com/open-watcom/open-watcom-v2)
-C/C++ toolchain running in Docker.
+Cross-compiled utilities for MS-DOS, Windows 3.x, Windows 9x, Windows NT/2000
+and x64 Windows. The project uses Open Watcom v2 and MinGW-w64 in Docker.
 
 ## Quick start
 
 ```sh
-docker compose run --rm build              # build everything into ./build
-docker compose run --rm build make dos     # one platform
-docker compose run --rm build make help    # all make targets
-docker compose run --rm build bash         # interactive Open Watcom shell
-docker compose run --rm test               # smoke tests (DOSBox-X + Wine)
+docker compose run --rm build                    # build all utilities and NetBolt targets
+docker compose run --rm build make dos           # build one platform
+docker compose run --rm build make win64         # NetBolt for x64 Windows
+docker compose run --rm build make help          # list targets
+docker compose run --rm test                     # format, smoke and protocol tests
+docker compose run --rm build bash               # open the build environment
 ```
 
-The images are built on first use (`docker compose build` to rebuild them).
-Files are created as user 1000:1000; `export UID GID=$(id -g)` if yours differs.
+Docker images are built on first use; run `docker compose build` to rebuild
+them. Build outputs are written to `build/`. Files are created as user
+`1000:1000`; if needed, set `UID` and `GID` to your own values before running
+Compose.
 
 ## Utilities
 
-| Name      | Platforms | Description                                                   |
-|-----------|-----------|---------------------------------------------------------------|
-| `picasso` | `win16` `win9x` `winnt` | Windows 95 style paint program for Windows 3.1, 9x and NT/2000 (see below) |
-| `imgconv` | all       | converts pictures between BMP, PNG, JPEG and TIFF (see below) |
-| `hello`   | all       | sample console program                                        |
-| `hellowin`| Windows   | sample GUI program with resources                             |
+| Utility | Platforms | Description |
+|---|---|---|
+| [NetBolt](#netbolt) | DOS, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
+| [Picasso](#picasso) | Windows 3.x/9x/NT | Windows 95-style paint program |
+| [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
+| `hello` | All Open Watcom platforms | Console example |
+| `hellowin` | Windows | GUI example with resources |
 
-## Platforms
+## NetBolt
 
-| Platform | Target                  | Compiler | Defaults                         | Macro         |
-|----------|-------------------------|----------|----------------------------------|---------------|
-| `dos`    | MS-DOS, real mode       | `wcc`    | 8086, small model (`t` = `.COM`) | `RETRO_DOS`   |
-| `win16`  | Windows 3.x             | `wcc`    | 286, large model                 | `RETRO_WIN16` |
-| `win9x`  | Windows 95/98/ME        | `wcc386` | 386, ANSI API                    | `RETRO_WIN9X` |
-| `winnt`  | Windows NT 4.0 / 2000   | `wcc386` | Pentium-tuned, optional UNICODE  | `RETRO_WINNT` |
+NetBolt is an independent TCP throughput tester for DOS, Windows 3.x, Windows
+9x, Windows NT/2000 and x64 Windows. It supports client and server modes,
+parallel streams and reverse tests using the iperf 3.x control protocol. The
+DOS build uses mTCP; Windows builds use Winsock. NetBolt is not affiliated with
+or endorsed by the iperf3 project.
 
-Every source file is also given `RETRO_BITS` (16 or 32) and `RETRO_CONSOLE` or
-`RETRO_GUI`. `lib/retro/retro.h` adds `RETRO_WINDOWS` and `RETRO_WIN32`.
-
-Output goes to `build/<platform>/bin/NAME.EXE` (upper-case 8.3 names); objects,
-map files and libraries are under `build/<platform>/obj` and `.../lib`.
-
-## Layout
-
-```
-docker/build/   Open Watcom image (also ships mTCP sources in $MTCP)
-docker/test/    DOSBox-X + Wine image
-mk/rules.mk     builds one module for one platform
-mk/platform/    per-platform compiler / linker settings
-lib/<name>/     shared libraries: lib/retro (linked into everything), lib/imgio (image codecs)
-src/<name>/     one directory per utility
-tests/          smoke-test runner
-tools/          helper scripts
-```
-
-## Adding a utility
+Build all NetBolt targets as part of the default build, or select one target:
 
 ```sh
-docker compose run --rm build make new NAME=mytool            # console
-docker compose run --rm build make new NAME=mytool TYPE=gui   # Windows GUI
+docker compose run --rm build make PROJECTS=netbolt
+docker compose run --rm build make dos
+docker compose run --rm build make win16
+docker compose run --rm build make win9x
+docker compose run --rm build make winnt
+docker compose run --rm build make win64
 ```
 
-This creates `src/mytool/` with a `project.mk` and a source file. Any directory
-under `src/` holding a `project.mk` is built automatically.
+| Executable | Platform |
+|---|---|
+| `NETBOLTD.EXE` | MS-DOS / FreeDOS |
+| `NETBOLT16.EXE` | Windows 3.x |
+| `NETBOLT32.EXE` | Windows 95/98/ME |
+| `NETBOLTN.EXE` | Windows NT 4.0 / 2000 |
+| `NETBOLT64.EXE` | x64 Windows |
 
-### project.mk variables
-
-| Variable     | Default              | Meaning                                              |
-|--------------|----------------------|------------------------------------------------------|
-| `NAME`       | directory name       | output base name (max. 8 characters)                 |
-| `TYPE`       | `console`            | `console` or `gui`                                   |
-| `PLATFORMS`  | all four             | platforms this utility is built for                  |
-| `SRCS`       | all `*.c *.cpp *.asm`| source files, relative to the project directory      |
-| `RES`        | none                 | resource script (`.rc`), Windows platforms only; it is rebuilt when a header or a file in `res/` changes |
-| `LIBS`       | `retro`              | libraries from `lib/` to link                        |
-| `UNICODE`    | off                  | `1` defines `UNICODE`/`_UNICODE` on `winnt` only     |
-| `CFLAGS` `CXXFLAGS` `AFLAGS` `RCFLAGS` `LDFLAGS` | | extra tool options                |
-
-In a library's `project.mk`, `CFLAGS` and `CPU_<platform>` apply to the library itself.
-
-Per-platform variants: `SRCS_<platform>`, `CFLAGS_<platform>` (likewise for the
-other flag variables), `MODEL_<platform>` (memory model for `dos` / `win16`) and
-`CPU_<platform>` (e.g. `CPU_dos := 3`). `LDFLAGS` takes `wlink` directives,
-e.g. `LDFLAGS_dos := option stack=8k`.
-
-`TYPE := console` on `win16` uses Open Watcom's default windowing system, so
-plain `printf` programs run in a text window under Windows 3.x.
-
-A library is a directory under `lib/` whose `project.mk` sets `KIND := lib`;
-its directory is added to the include path of the programs that list it in
-`LIBS`. Libraries are built once per platform and memory model.
-
-## Tests
-
-`docker compose run --rm test` checks the executable format of every binary
-and runs each console utility that has a `src/<name>/test.expect` file
-(DOSBox-X for `dos`, Wine for `win9x` / `winnt`); every line of that file must
-appear in the program's output. Win16 and GUI programs are format-checked only.
-
-A project can add its own tests in `src/<name>/test.sh`, which is sourced by
-`tests/run.sh` (helpers: `ok`, `bad`, `dos_run`, `$tmp`). `imgconv` and
-`picasso` use this to convert about 45 reference pictures generated with
-ImageMagick (`tests/images/make.sh`) and compare the results with ImageMagick's
-own reading of them: `IMGCONV.EXE` as 16-bit code under DOSBox-X and as Win32
-code under Wine, and `PICASSO.EXE /convert` as a Win16 and as a Win32 program
-under Wine.
-
-### GUI programs
-
-`tests/gui.sh` runs a Windows program under Wine on a headless X server, so it
-can be driven with the mouse and keyboard and captured to `build/shots/*.png`:
-
-```sh
-docker compose run --rm test tests/gui.sh build/win16/bin/PICASSO.EXE                              # one screenshot
-docker compose run --rm test tests/gui.sh build/win16/bin/PICASSO.EXE src/picasso/tests/tour.sh    # scripted session
-```
-
-The script is sourced with the helpers `shot`, `click`, `dclick`, `drag` and
-`key` available (see the header of `tests/gui.sh`).
+The binaries are placed in `build/<platform>/bin/`. See
+[`src/netbolt/README.md`](src/netbolt/README.md) for usage, platform details
+and protocol test helpers. NetBolt source uses the repository MIT license; the
+DOS executable also links mTCP, which is licensed under GPLv3.
 
 ## Picasso
 
-`build/win16/bin/PICASSO.EXE` is a single-file paint program for Windows 3.1
-and its Win32 ports are `build/win9x/bin/PICASSO.EXE` for Windows 95/98/ME and
-`build/winnt/bin/PICASSO.EXE` for Windows NT 4.0 / 2000 (Pentium-tuned), all
-built from the same sources. The Win32 ports use the ANSI API, with long
-file names and the Explorer-style file dialogs. Both have the look and feel
-of Windows 95 Paint: 3-D toolbar with tool tips, tool
-box with per-tool options, color box, status bar with hints, cursor position
-and sizes, and custom tool cursors.
+`PICASSO.EXE` is a paint program for Windows 3.1, Windows 95/98/ME and Windows
+NT/2000, built from the same sources. It uses a Windows 95-style interface with
+a 3-D toolbar, tool tips, tool options, color palette and status bar.
 
-- **Tools:** free-form and rectangular selection, eraser, fill, color picker,
-  magnifier, pencil, brush (12 shapes), airbrush, text, line, curve, rectangle,
-  polygon, ellipse and rounded rectangle. The left button draws with the
-  foreground color, the right button with the background color; Shift
-  constrains lines and shapes.
-- **Selections:** move, Ctrl+drag to copy, cut / copy / paste through the
-  Clipboard, opaque or transparent, flip, rotate and invert.
-- **Picture:** three levels of undo / repeat, flip / rotate / invert, resize
-  by dragging the handles or with *Image > Attributes*, zoom up to 800% with a
-  pixel grid.
-- **Files:** opens BMP (including RLE compressed, 16 and 32-bit and OS/2
-  bitmaps), PNG, JPEG (baseline and progressive) and TIFF; saves BMP
-  (monochrome, 16, 256 colors, 24-bit), PNG, JPEG and TIFF - the type is chosen
-  in *Save As* or simply by the extension typed. Prints, accepts a file name on
-  the command line and files dropped from File Manager.
-- **256-color displays:** Picasso manages its own palette - the colors of the
-  picture (true-color pictures are reduced to an optimal 236-color palette)
-  plus the colors you draw with - and copies it to the Clipboard.
-- `PICASSO.EXE /convert input output` converts a file without opening a window.
+- **Drawing:** selection, eraser, fill, color picker, magnifier, pencil, brush,
+  airbrush, text, line, curve, rectangle, polygon, ellipse and rounded rectangle.
+- **Editing:** move or copy selections; cut, copy and paste; undo and repeat;
+  flip, rotate, invert and resize; zoom to 800% with a pixel grid.
+- **Files and printing:** opens BMP, PNG, JPEG and TIFF; saves BMP, PNG, JPEG
+  and TIFF. Accepts files from the command line and File Manager.
+- **256-color displays:** maintains an optimized palette for the picture and
+  drawing colors.
 
-Sources are in `src/picasso`: `main.c` (frame, toolbars, menus, dialogs),
-`canvas.c` (canvas window and tools), `image.c` (bitmap, undo, selection,
-transforms), `palette.c` (256-color displays), `file.c` (files through
-`lib/imgio`, printing). The few differences between the Win16 and Win32 APIs
-are wrapped by macros at the top of `picasso.h`. The artwork in `res/` is generated by
-`python3 src/picasso/res/mkart.py`; `tests/tour*.sh` are scripted GUI sessions.
+`PICASSO.EXE /convert input output` converts an image without opening the GUI.
+Source files are in `src/picasso`; artwork in `res/` is generated by
+`python3 src/picasso/res/mkart.py`.
 
-Notes:
-
-- Pictures can be up to 16000 x 16000 pixels; in practice the limit is the
-  memory Windows can give to one bitmap (about 16 MB in Windows 3.1).
-- JPEG files are saved with quality 90; set `JpegQuality=` (1-100) in a
-  `[Picasso]` section of `WIN.INI` to change it. Below 90 the color is stored
-  at half resolution (4:2:0).
-- Transparency in PNG and TIFF files is blended onto white; 16-bit samples are
-  reduced to 8 bits.
+Pictures can be up to 16000 x 16000 pixels, subject to available Windows
+memory. JPEG quality defaults to 90 and can be changed with `JpegQuality=` in
+the `[Picasso]` section of `WIN.INI`. PNG and TIFF transparency is blended onto
+white; 16-bit samples are reduced to 8 bits.
 
 ## imgconv and lib/imgio
 
-`imgconv input output [n]` converts between BMP, PNG, JPEG and TIFF on every
-platform (`n` = JPEG quality or BMP color depth), e.g. `IMGCONV PHOTO.JPG PHOTO.BMP 8`.
+`imgconv input output [n]` converts BMP, PNG, JPEG and TIFF files. The optional
+`n` sets JPEG quality or BMP color depth; for example:
 
-`lib/imgio` is the codec library behind it and Picasso, written from scratch
-for 16-bit targets (see `lib/imgio/imgio.h` for the API):
+```sh
+IMGCONV PHOTO.JPG PHOTO.BMP 8
+```
 
-| Format | Reads                                                              | Writes                         |
-|--------|--------------------------------------------------------------------|--------------------------------|
-| BMP    | 1/4/8/16/24/32-bit, RLE4/RLE8, bit fields, OS/2, top-down          | 1/4/8/24-bit                   |
-| PNG    | all color types and bit depths, interlaced, transparency           | 8-bit RGB or palette           |
-| JPEG   | baseline, extended and progressive Huffman; gray, YCbCr, CMYK/YCCK | baseline, 4:4:4 or 4:2:0, gray |
-| TIFF   | gray, palette, RGB(A), CMYK; strips or tiles; none, PackBits, LZW, Deflate | LZW, RGB or palette    |
+`lib/imgio` is the streaming codec library used by imgconv and Picasso. It
+processes images row by row, so pictures are not held entirely in memory and
+no allocation exceeds 64 KB.
 
-Pictures are streamed row by row through callbacks, so they are never held in
-memory by the library and no allocation exceeds 64 KB. Pictures with 256
-colors or fewer are saved with a palette; saving true color as an 8-bit BMP
-uses median-cut color reduction. Not supported: JPEG with arithmetic coding or
-12-bit samples, TIFF with JPEG or CCITT fax compression or separate planes.
-The library is built for 8086/286 code by default; adding `CPU_win16 := 3` to
-`lib/imgio/project.mk` makes the 32-bit arithmetic of the JPEG codec
-considerably faster on 386 and later machines.
+| Format | Reads | Writes |
+|---|---|---|
+| BMP | 1/4/8/16/24/32-bit, RLE4/RLE8, bit fields, OS/2, top-down | 1/4/8/24-bit |
+| PNG | All color types and bit depths, interlacing, transparency | 8-bit RGB or palette |
+| JPEG | Baseline, extended and progressive Huffman; gray, YCbCr, CMYK/YCCK | Baseline, 4:4:4 or 4:2:0, gray |
+| TIFF | Gray, palette, RGB(A), CMYK; strips or tiles; none, PackBits, LZW, Deflate | LZW, RGB or palette |
+
+Unsupported formats include arithmetic-coded or 12-bit JPEG, and TIFF with
+JPEG, CCITT fax compression or separate planes. The library defaults to 8086/
+286 code; setting `CPU_win16 := 3` in `lib/imgio/project.mk` enables faster
+32-bit JPEG arithmetic on 386 and later CPUs.
+
+## Build system
+
+### Platforms
+
+The common Open Watcom build system supports these platforms:
+
+| Target | Operating system | Compiler | Defaults |
+|---|---|---|---|
+| `dos` | MS-DOS, real mode | `wcc` | 8086, small model (`t` produces `.COM`) |
+| `win16` | Windows 3.x | `wcc` | 286, large model |
+| `win9x` | Windows 95/98/ME | `wcc386` | 386, ANSI API |
+| `winnt` | Windows NT 4.0 / 2000 | `wcc386` | Pentium-tuned, optional UNICODE |
+
+NetBolt also has an x64 Windows target, `win64`, built with MinGW-w64 in the
+same build image. Standard outputs use `build/<platform>/bin/NAME.EXE`; object
+files, maps and libraries are under `build/<platform>/obj` and `.../lib`.
+
+### Repository layout
+
+```text
+docker/build/   Open Watcom, MinGW-w64 and mTCP build image
+docker/test/    DOSBox-X, Wine and protocol test tools
+mk/rules.mk     common build rules for one module and platform
+mk/platform/    compiler and linker settings per platform
+lib/            shared libraries (retro platform helpers and imgio codecs)
+src/            utilities, including NetBolt and Picasso
+tests/          shared smoke-test and GUI-test runners
+tools/          project scaffolding and helper scripts
+```
+
+NetBolt has a dedicated `src/netbolt/Makefile` for its mTCP-based DOS target
+and MinGW-w64 x64 target; the top-level Makefile includes it in platform
+builds.
+
+### Adding a utility
+
+Create a console or GUI project with:
+
+```sh
+docker compose run --rm build make new NAME=mytool
+docker compose run --rm build make new NAME=mygui TYPE=gui
+```
+
+The scaffold creates `src/<name>/project.mk` and a source file. Directories
+under `src/` with a `project.mk` are discovered and built automatically.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NAME` | Directory name | Output base name, up to 8 characters |
+| `TYPE` | `console` | `console` or `gui` |
+| `PLATFORMS` | All four Open Watcom targets | Platforms to build |
+| `SRCS` | `*.c`, `*.cpp`, `*.asm` in the project directory | Source files |
+| `RES` | None | Windows resource script (`.rc`) |
+| `LIBS` | `retro` | Libraries from `lib/` to link |
+| `UNICODE` | Off | Define Unicode macros on `winnt` |
+| `CFLAGS`, `CXXFLAGS`, `AFLAGS`, `RCFLAGS`, `LDFLAGS` | — | Additional tool options |
+
+Per-platform variants such as `SRCS_<platform>`, `CFLAGS_<platform>`,
+`MODEL_<platform>` and `CPU_<platform>` override defaults. `LDFLAGS` accepts
+`wlink` directives, for example `LDFLAGS_dos := option stack=8k`. A library
+sets `KIND := lib` in its `project.mk`; its directory is added to the include
+path for projects that list it in `LIBS`.
+
+For common-rule projects, each source is given `RETRO_BITS` and either
+`RETRO_CONSOLE` or `RETRO_GUI`. `lib/retro/retro.h` provides `RETRO_WINDOWS`
+and `RETRO_WIN32`. On Win16, console projects use Open Watcom's default text
+window so standard I/O remains available.
+
+## Tests
+
+Run the test container after building:
+
+```sh
+docker compose run --rm test
+```
+
+The runner checks executable formats, runs console projects with a
+`src/<name>/test.expect` file (DOSBox-X for DOS, Wine for Win9x/NT), and sources
+any `src/<name>/test.sh` project tests. NetBolt's test exercises client and
+server interoperability with a compatible protocol peer. Picasso and imgconv
+also test image conversion against reference files generated with ImageMagick.
+
+Win16 and GUI apps are format-checked by default. To run a GUI under Wine on a
+headless X server and capture a screenshot:
+
+```sh
+docker compose run --rm test tests/gui.sh build/win16/bin/PICASSO.EXE
+docker compose run --rm test tests/gui.sh \
+  build/win16/bin/PICASSO.EXE src/picasso/tests/tour.sh
+```
+
+The GUI script provides `shot`, `click`, `dclick`, `drag` and `key` helpers to
+the scripted session.

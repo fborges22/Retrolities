@@ -1,0 +1,74 @@
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP ICON "netbolt.ico"
+
+IDM_MAIN MENU
+BEGIN
+    POPUP "&Test"
+    BEGIN
+        MENUITEM "&Start\tEnter",      IDM_START
+        MENUITEM "S&top\tEsc",         IDM_STOP
+        MENUITEM SEPARATOR
+        MENUITEM "&Copy report",       IDM_COPY
+        MENUITEM "C&lear report",      IDM_CLEAR
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",              IDM_EXIT
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About NetBolt...", IDM_ABOUT
+    END
+END
+
+IDD_ABOUT DIALOG 30, 30, 210, 118
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About NetBolt"
+FONT 8, "MS Sans Serif"
+BEGIN
+    ICON            IDI_APP, -1, 10, 10, 18, 20
+    LTEXT           "NetBolt 1.0", -1, 40, 10, 160, 9
+#ifdef _WIN64
+    LTEXT           "Network throughput test for x64 Windows.", -1, 40, 22, 160, 18
+#elif defined(IP3_WINNT)
+    LTEXT           "Network throughput test for Windows NT 4.0 and Windows 2000.", -1, 40, 22, 160, 18
+#else
+    LTEXT           "Network throughput test for Windows 3.x and Windows 9x.", -1, 40, 22, 160, 18
+#endif
+    LTEXT           "Speaks the iperf 3.x control protocol over TCP: client and server, parallel streams and reverse mode.", -1, 40, 44, 160, 28
+#ifdef _WIN64
+    LTEXT           "Built with MinGW-w64. Uses Winsock 2.2.", -1, 40, 76, 160, 9
+#elif defined(IP3_WINNT)
+    LTEXT           "Built with Open Watcom C. Uses Winsock 2.2.", -1, 40, 76, 160, 9
+#else
+    LTEXT           "Built with Open Watcom C. Uses Winsock 1.1.", -1, 40, 76, 160, 9
+#endif
+    LTEXT           "Developed by Felipe Andrade Allemand Borges.", -1, 40, 87, 160, 9
+    DEFPUSHBUTTON   "OK", IDOK, 80, 101, 50, 14
+END
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+#ifdef IP3_WINNT
+FILEOS 0x40004L
+#else
+FILEOS 0x4L
+#endif
+FILETYPE 0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "FileDescription", "NetBolt - network throughput test\0"
+            VALUE "FileVersion", "1.0\0"
+            VALUE "ProductName", "NetBolt\0"
+            VALUE "ProductVersion", "1.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

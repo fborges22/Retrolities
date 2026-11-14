@@ -4,6 +4,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl xz-utils unzip zip make python3 \
+      gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 \
  && rm -rf /var/lib/apt/lists/*
 
 # Complete Open Watcom v2 snapshot (compilers, linkers, wrc, headers and

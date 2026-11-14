@@ -4,7 +4,7 @@ FROM debian:trixie-slim
 RUN dpkg --add-architecture i386 \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates make python3 dosbox-x wine wine32:i386 \
+      ca-certificates build-essential iperf3 python3 dosbox-x wine wine32:i386 \
       xvfb xauth xdotool imagemagick \
  && rm -rf /var/lib/apt/lists/*
 
