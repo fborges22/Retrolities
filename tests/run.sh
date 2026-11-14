@@ -4,7 +4,8 @@
 #   1. every binary in build/<platform>/bin has the right executable format;
 #   2. every console project with a src/<project>/test.expect file is run
 #      (DOSBox-X for dos, Wine for win9x / winnt) and each line of that file
-#      must appear in its output.
+#      must appear in its output;
+#   3. every src/<project>/test.sh is sourced for project specific tests.
 #
 # Win16 binaries and GUI programs are only format-checked.
 set -u
@@ -39,12 +40,16 @@ for exe in build/*/bin/*; do
 done
 
 # ---- 2. run console programs -----------------------------------------------
+dos_run() {  # <directory mounted as C:> <command line>   (output in OUT.TXT)
+    timeout "${DOS_TIMEOUT:-600}" dosbox-x -silent -fastlaunch -nolog -nomenu \
+        -c "config -set cycles=max" -c "mount c $1" -c "c:" -c "$2 > OUT.TXT" -c "exit" \
+        >/dev/null 2>&1
+}
+
 run_dos() {  # <exe> <output file>
     dir=$tmp/dos
     rm -rf "$dir" && mkdir -p "$dir" && cp "$1" "$dir/"
-    timeout 60 dosbox-x -silent -fastlaunch -nolog -nomenu \
-        -c "mount c $dir" -c "c:" -c "$(basename "$1") > OUT.TXT" -c "exit" \
-        >/dev/null 2>&1
+    dos_run "$dir" "$(basename "$1")"
     tr -d '\r' < "$dir/OUT.TXT" > "$2" 2>/dev/null
 }
 
@@ -74,6 +79,13 @@ for expect in src/*/test.expect; do
         esac
         check_output "run    $exe" "$expect" "$out"
     done
+done
+
+# ---- 3. project specific tests ---------------------------------------------
+# src/<project>/test.sh is sourced here; it may use ok, bad, dos_run and $tmp.
+for script in src/*/test.sh; do
+    [ -f "$script" ] || continue
+    . "$script"
 done
 
 echo

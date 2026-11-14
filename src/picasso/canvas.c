@@ -588,6 +588,7 @@ static void OnPaint(HWND hwnd)
     RECT cl, ir, r;
     int sx0, sx1, sy0, sy1, i, k;
 
+    PalSelect(hdc);
     GetClientRect(hwnd, &cl);
     ir.left = ImgToCx(0);
     ir.top = ImgToCy(0);
@@ -647,6 +648,7 @@ static void OnPaint(HWND hwnd)
         SetBkColor(hdc, RGB(255, 255, 255));
         DrawFocusRect(hdc, &r);
     }
+    PalUnselect(hdc);
     EndPaint(hwnd, &ps);
 }
 
@@ -723,13 +725,13 @@ static void LassoFinish(void)
         if (mask) DeleteObject(mask);
         return;
     }
-    dc = CreateCompatibleDC(hdcImg);
+    dc = MemDC();
     old = SelectObject(dc, mask);
     PatBlt(dc, 0, 0, w, h, WHITENESS);          /* 1 = outside the shape */
     FillRgn(dc, rgn, GetStockObject(BLACK_BRUSH));
     FrameRgn(dc, rgn, GetStockObject(BLACK_BRUSH), 1, 1);
     SelectObject(dc, old);
-    DeleteDC(dc);
+    FreeDC(dc);
     DeleteObject(rgn);
     sel.rc = b;
     sel.hbmMask = mask;
@@ -816,10 +818,10 @@ static void OnDown(HWND hwnd, int cx, int cy, BOOL right, WPARAM keys)
         break;
 
     case T_FILL:
-        if (inside && GetPixel(hdcImg, p.x, p.y) != cFg && PushUndo()) {
+        if (inside && !SAMECOLOR(GetPixel(hdcImg, p.x, p.y), cFg) && PushUndo()) {
             HBRUSH br = CreateSolidBrush(cFg), ob = SelectObject(hdcImg, br);
 
-            ExtFloodFill(hdcImg, p.x, p.y, GetPixel(hdcImg, p.x, p.y), FLOODFILLSURFACE);
+            ExtFloodFill(hdcImg, p.x, p.y, PalColor(GetPixel(hdcImg, p.x, p.y)), FLOODFILLSURFACE);
             SelectObject(hdcImg, ob);
             DeleteObject(br);
             InvalidateImg(NULL, 0);

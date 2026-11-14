@@ -32,6 +32,7 @@ void ImageDone(void)
         SelectObject(hdcImg, hbmStock);
         if (hbmImg)
             DeleteObject(hbmImg);
+        PalDone();
         DeleteDC(hdcImg);
     }
 }
@@ -52,23 +53,17 @@ HBITMAP GrabBitmap(HDC src, int x, int y, int w, int h)
 
     if (!hbm)
         return NULL;
-    dc = CreateCompatibleDC(hdcImg);
+    dc = MemDC();
     old = SelectObject(dc, hbm);
     BitBlt(dc, 0, 0, w, h, src, x, y, SRCCOPY);
     SelectObject(dc, old);
-    DeleteDC(dc);
+    FreeDC(dc);
     return hbm;
-}
-
-/* Drawing always uses solid colours, so flood fills behave predictably. */
-COLORREF Near(COLORREF c)
-{
-    return GetNearestColor(hdcImg, c);
 }
 
 void FillColor(HDC hdc, int x, int y, int w, int h, COLORREF c)
 {
-    HBRUSH br = CreateSolidBrush(GetNearestColor(hdc, c));
+    HBRUSH br = CreateSolidBrush(Near(c));
     HBRUSH old = SelectObject(hdc, br);
 
     PatBlt(hdc, x, y, w, h, PATCOPY);
@@ -115,12 +110,12 @@ BOOL ResizeImage(int w, int h)
         ErrorBox("Not enough memory for a picture of this size.");
         return FALSE;
     }
-    dc = CreateCompatibleDC(hdcImg);
+    dc = MemDC();
     old = SelectObject(dc, hbm);
     FillColor(dc, 0, 0, w, h, bgColor);
     BitBlt(dc, 0, 0, imgW, imgH, hdcImg, 0, 0, SRCCOPY);
     SelectObject(dc, old);
-    DeleteDC(dc);
+    FreeDC(dc);
     SetImage(hbm, w, h);
     return TRUE;
 }
@@ -207,7 +202,7 @@ void BaseBlt(const RECT *rc)
 
     if (nUndo == 0)
         return;
-    dc = CreateCompatibleDC(hdcImg);
+    dc = MemDC();
     old = SelectObject(dc, undoStk[nUndo - 1].hbm);
     if (rc)
         BitBlt(hdcImg, rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
@@ -215,7 +210,7 @@ void BaseBlt(const RECT *rc)
     else
         BitBlt(hdcImg, 0, 0, imgW, imgH, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
-    DeleteDC(dc);
+    FreeDC(dc);
 }
 
 void DoUndo(void)
@@ -279,9 +274,9 @@ static void FillSelShape(HDC dc, int x, int y)
     int w = sel.rc.right - sel.rc.left, h = sel.rc.bottom - sel.rc.top;
 
     if (sel.hbmMask) {
-        HDC dm = CreateCompatibleDC(hdcImg);
+        HDC dm = MemDC();
         HBITMAP om = SelectObject(dm, sel.hbmMask);
-        HBRUSH br = CreateSolidBrush(GetNearestColor(dc, bgColor));
+        HBRUSH br = CreateSolidBrush(Near(bgColor));
         HBRUSH ob = SelectObject(dc, br);
 
         SetTextColor(dc, RGB(0, 0, 0));
@@ -290,7 +285,7 @@ static void FillSelShape(HDC dc, int x, int y)
         SelectObject(dc, ob);
         DeleteObject(br);
         SelectObject(dm, om);
-        DeleteDC(dm);
+        FreeDC(dm);
     } else {
         FillColor(dc, x, y, w, h, bgColor);
     }
@@ -301,13 +296,13 @@ static void FillSelShape(HDC dc, int x, int y)
 static void DrawSel(HDC hdc, int x, int y)
 {
     int w = sel.rc.right - sel.rc.left, h = sel.rc.bottom - sel.rc.top;
-    HDC ds = CreateCompatibleDC(hdcImg);
+    HDC ds = MemDC();
     HBITMAP os = SelectObject(ds, sel.hbm);
 
     if (!sel.hbmMask && optOpaque == 0) {
         BitBlt(hdc, x, y, w, h, ds, 0, 0, SRCCOPY);
     } else {
-        HDC dm = CreateCompatibleDC(hdcImg);
+        HDC dm = MemDC();
         HBITMAP mask = CreateBitmap(w, h, 1, 1, NULL);
         HBITMAP om = SelectObject(dm, mask);
 
@@ -318,12 +313,12 @@ static void DrawSel(HDC hdc, int x, int y)
             PatBlt(dm, 0, 0, w, h, BLACKNESS);
         }
         if (sel.hbmMask) {
-            HDC d2 = CreateCompatibleDC(hdcImg);
+            HDC d2 = MemDC();
             HBITMAP o2 = SelectObject(d2, sel.hbmMask);
 
             BitBlt(dm, 0, 0, w, h, d2, 0, 0, SRCPAINT);
             SelectObject(d2, o2);
-            DeleteDC(d2);
+            FreeDC(d2);
         }
         SetTextColor(hdc, RGB(0, 0, 0));
         SetBkColor(hdc, RGB(255, 255, 255));
@@ -332,10 +327,10 @@ static void DrawSel(HDC hdc, int x, int y)
         BitBlt(hdc, x, y, w, h, ds, 0, 0, SRCINVERT);
         SelectObject(dm, om);
         DeleteObject(mask);
-        DeleteDC(dm);
+        FreeDC(dm);
     }
     SelectObject(ds, os);
-    DeleteDC(ds);
+    FreeDC(ds);
 }
 
 /* Rebuilds the picture from the base and the floating selection. */
@@ -346,7 +341,7 @@ void SelCompose(const RECT *old)
 
     if (!sel.floating)
         return;
-    dc = CreateCompatibleDC(hdcImg);
+    dc = MemDC();
     ob = SelectObject(dc, sel.hbmBase);
     if (old)
         BitBlt(hdcImg, old->left, old->top, old->right - old->left, old->bottom - old->top,
@@ -354,7 +349,7 @@ void SelCompose(const RECT *old)
     else
         BitBlt(hdcImg, 0, 0, imgW, imgH, dc, 0, 0, SRCCOPY);
     SelectObject(dc, ob);
-    DeleteDC(dc);
+    FreeDC(dc);
     DrawSel(hdcImg, sel.rc.left, sel.rc.top);
 }
 
@@ -378,12 +373,12 @@ BOOL SelLift(BOOL copy)
         return FALSE;
     }
     if (!copy) {
-        HDC dc = CreateCompatibleDC(hdcImg);
+        HDC dc = MemDC();
         HBITMAP ob = SelectObject(dc, sel.hbmBase);
 
         FillSelShape(dc, sel.rc.left, sel.rc.top);
         SelectObject(dc, ob);
-        DeleteDC(dc);
+        FreeDC(dc);
     }
     sel.floating = TRUE;
     SelCompose(NULL);
@@ -409,12 +404,12 @@ void SelDelete(void)
     if (!sel.active)
         return;
     if (sel.floating) {
-        HDC dc = CreateCompatibleDC(hdcImg);
+        HDC dc = MemDC();
         HBITMAP ob = SelectObject(dc, sel.hbmBase);
 
         BitBlt(hdcImg, 0, 0, imgW, imgH, dc, 0, 0, SRCCOPY);
         SelectObject(dc, ob);
-        DeleteDC(dc);
+        FreeDC(dc);
     } else {
         if (!PushUndo())
             return;
@@ -436,12 +431,12 @@ void DoCopy(void)
     w = sel.rc.right - sel.rc.left;
     h = sel.rc.bottom - sel.rc.top;
     if (sel.floating) {
-        HDC ds = CreateCompatibleDC(hdcImg);
+        HDC ds = MemDC();
         HBITMAP os = SelectObject(ds, sel.hbm);
 
         hbm = GrabBitmap(ds, 0, 0, w, h);
         SelectObject(ds, os);
-        DeleteDC(ds);
+        FreeDC(ds);
     } else {
         hbm = GrabBitmap(hdcImg, sel.rc.left, sel.rc.top, w, h);
     }
@@ -450,7 +445,7 @@ void DoCopy(void)
         return;
     }
     if (sel.hbmMask) {          /* outside the free-form shape: background */
-        HDC dc = CreateCompatibleDC(hdcImg), dm = CreateCompatibleDC(hdcImg);
+        HDC dc = MemDC(), dm = MemDC();
         HBITMAP oc = SelectObject(dc, hbm), om = SelectObject(dm, sel.hbmMask);
         HBRUSH br = CreateSolidBrush(Near(bgColor)), ob = SelectObject(dc, br);
 
@@ -461,16 +456,74 @@ void DoCopy(void)
         DeleteObject(br);
         SelectObject(dc, oc);
         SelectObject(dm, om);
-        DeleteDC(dc);
-        DeleteDC(dm);
+        FreeDC(dc);
+        FreeDC(dm);
     }
     if (OpenClipboard(hFrame)) {
         EmptyClipboard();
         SetClipboardData(CF_BITMAP, hbm);
+        if (hPal)
+            SetClipboardData(CF_PALETTE, PalCopy());
         CloseClipboard();
     } else {
         DeleteObject(hbm);
     }
+}
+
+/* Palette displays: converts a Clipboard bitmap to the picture's palette,
+ * going through true colour so that both palettes are honoured. */
+static HBITMAP PastePalette(HBITMAP clip, int w, int h)
+{
+    HPALETTE cp = GetClipboardData(CF_PALETTE);
+    BITMAPINFOHEADER bi;
+    PALETTEENTRY pe;
+    HBITMAP mine = MakeBitmap(w, h), old;
+    BYTE *row = malloc((unsigned)w * 3 + 8);
+    HDC hdc, dc;
+    int y, i, n;
+
+    if (!mine || !row) {
+        if (mine) DeleteObject(mine);
+        free(row);
+        return NULL;
+    }
+    if (cp) {                   /* adopt its colours while there is room */
+        WORD count = 0;
+
+        GetObject(cp, sizeof(count), &count);
+        n = count;
+        for (i = 0; i < n && i < 256; i++) {
+            GetPaletteEntries(cp, i, 1, &pe);
+            Near(RGB(pe.peRed, pe.peGreen, pe.peBlue));
+        }
+    }
+    hdc = GetDC(hFrame);
+    if (cp) {
+        SelectPalette(hdc, cp, FALSE);
+        RealizePalette(hdc);
+    }
+    dc = MemDC();
+    old = SelectObject(dc, mine);
+    memset(&bi, 0, sizeof(bi));
+    bi.biSize = sizeof(bi);
+    bi.biPlanes = 1;
+    bi.biBitCount = 24;
+    for (y = 0; y < h; y++) {
+        bi.biWidth = w;
+        bi.biHeight = h;
+        bi.biSizeImage = 0;
+        GetDIBits(hdc, clip, h - 1 - y, 1, row, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
+        bi.biHeight = 1;
+        bi.biSizeImage = 0;
+        SetDIBitsToDevice(dc, 0, y, w, 1, 0, 0, 0, 1, row, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
+    }
+    SelectObject(dc, old);
+    FreeDC(dc);
+    SelectPalette(hdc, GetStockObject(DEFAULT_PALETTE), FALSE);
+    ReleaseDC(hFrame, hdc);
+    PalRealize();
+    free(row);
+    return mine;
 }
 
 void DoPaste(void)
@@ -483,14 +536,18 @@ void DoPaste(void)
         return;
     clip = GetClipboardData(CF_BITMAP);
     if (clip && GetObject(clip, sizeof(bm), &bm)) {
-        HDC dc = CreateCompatibleDC(hdcImg);
-        HBITMAP old = SelectObject(dc, clip);
-
         w = bm.bmWidth > MAXDIM ? MAXDIM : bm.bmWidth;
         h = bm.bmHeight > MAXDIM ? MAXDIM : bm.bmHeight;
-        mine = GrabBitmap(dc, 0, 0, w, h);
-        SelectObject(dc, old);
-        DeleteDC(dc);
+        if (hPal)
+            mine = PastePalette(clip, w, h);
+        if (!mine) {
+            HDC dc = MemDC();
+            HBITMAP old = SelectObject(dc, clip);
+
+            mine = GrabBitmap(dc, 0, 0, w, h);
+            SelectObject(dc, old);
+            FreeDC(dc);
+        }
     }
     CloseClipboard();
     if (!mine)
@@ -544,8 +601,8 @@ static HBITMAP FlipBitmap(HBITMAP src, int w, int h, BOOL horiz, BOOL mono)
 
     if (!dst)
         return NULL;
-    ds = CreateCompatibleDC(hdcImg);
-    dd = CreateCompatibleDC(hdcImg);
+    ds = MemDC();
+    dd = MemDC();
     os = SelectObject(ds, src);
     od = SelectObject(dd, dst);
     if (horiz)
@@ -556,8 +613,8 @@ static HBITMAP FlipBitmap(HBITMAP src, int w, int h, BOOL horiz, BOOL mono)
             BitBlt(dd, 0, h - 1 - i, w, 1, ds, 0, i, SRCCOPY);
     SelectObject(ds, os);
     SelectObject(dd, od);
-    DeleteDC(ds);
-    DeleteDC(dd);
+    FreeDC(ds);
+    FreeDC(dd);
     return dst;
 }
 
@@ -580,8 +637,8 @@ static HBITMAP RotateBitmap(HBITMAP src, int w, int h, BOOL clockwise, BOOL mono
         free(col);
         return NULL;
     }
-    hdc = GetDC(NULL);
-    dd = CreateCompatibleDC(hdcImg);
+    hdc = ScreenDC();
+    dd = MemDC();
     od = SelectObject(dd, dst);
     memset(&bi, 0, sizeof(bi));
     bi.biSize = sizeof(bi);
@@ -604,8 +661,8 @@ static HBITMAP RotateBitmap(HBITMAP src, int w, int h, BOOL clockwise, BOOL mono
                           col, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
     }
     SelectObject(dd, od);
-    DeleteDC(dd);
-    ReleaseDC(NULL, hdc);
+    FreeDC(dd);
+    ReleaseScreenDC(hdc);
     free(row);
     free(col);
     return dst;
@@ -643,12 +700,12 @@ void Transform(int kind)
 
         if (SelLift(FALSE)) {
             if (kind == X_INVERT) {
-                HDC dc = CreateCompatibleDC(hdcImg);
+                HDC dc = MemDC();
                 HBITMAP ob = SelectObject(dc, sel.hbm);
 
                 InvertBits(dc, w, h);
                 SelectObject(dc, ob);
-                DeleteDC(dc);
+                FreeDC(dc);
             } else {
                 HBITMAP nb = TransformBitmap(sel.hbm, w, h, kind, FALSE);
                 HBITMAP nm = sel.hbmMask ? TransformBitmap(sel.hbmMask, w, h, kind, TRUE) : NULL;

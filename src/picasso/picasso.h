@@ -7,10 +7,13 @@
 #include <shellapi.h>
 #include <stdlib.h>
 #include <string.h>
+#include "imgio.h"
 #include "resource.h"
 
-#define MAXDIM      2000        /* largest picture width / height */
+#define MAXDIM      IMG_MAXDIM  /* largest picture width / height */
 #define MAXUNDO     3
+
+#define SAMECOLOR(a, b) ((((a) ^ (b)) & 0x00FFFFFFL) == 0)
 
 #define ROP_PSDPxax 0x00B8074AL /* source 0 -> pattern, source 1 -> dest */
 #define ROP_DSPDxax 0x00E20746L /* source 1 -> pattern, source 0 -> dest */
@@ -42,7 +45,8 @@ extern int curTool, prevTool;
 extern int optOpaque, eraserIdx, brushIdx, sprayIdx, lineIdx, fillIdx;
 extern BOOL showGrid, dirty;
 extern char fileName[260];
-extern int saveBpp;
+extern int saveFmt, saveBpp;      /* IMG_xxx and BMP colour depth for File > Save */
+extern BOOL batchMode;
 extern LOGFONT textFont;
 
 void SetTool(int tool);
@@ -65,7 +69,6 @@ void ImageDone(void);
 HBITMAP MakeBitmap(int w, int h);
 HBITMAP GrabBitmap(HDC src, int x, int y, int w, int h);
 void FillColor(HDC hdc, int x, int y, int w, int h, COLORREF c);
-COLORREF Near(COLORREF c);
 BOOL NewImage(int w, int h);
 void SetImage(HBITMAP hbm, int w, int h);
 BOOL ResizeImage(int w, int h);
@@ -86,9 +89,28 @@ void DoPaste(void);
 void Transform(int kind);
 void ClearImage(void);
 
+/* ---- palette.c ---- */
+extern HPALETTE hPal;
+
+void PalInit(void);
+void PalDone(void);
+BOOL PalDevice(void);
+void PalSet(const BYTE pal[][3], int n);
+void PalRealize(void);
+int PalEntries(BYTE pal[][3]);
+HPALETTE PalCopy(void);
+void PalSelect(HDC hdc);
+void PalUnselect(HDC hdc);
+COLORREF PalColor(COLORREF c);
+COLORREF Near(COLORREF c);
+HDC MemDC(void);
+void FreeDC(HDC dc);
+HDC ScreenDC(void);
+void ReleaseScreenDC(HDC hdc);
+
 /* ---- file.c ---- */
-BOOL LoadBMP(const char *path);
-BOOL SaveBMP(const char *path, int bpp);
+BOOL LoadImageFile(const char *path, BOOL *reset);
+BOOL SaveImageFile(const char *path, int format, int bpp);
 void PrintImage(void);
 
 /* ---- canvas.c ---- */

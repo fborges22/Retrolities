@@ -3,4 +3,5 @@ NAME      := picasso
 TYPE      := gui
 PLATFORMS := win16
 RES       := picasso.rc
+LIBS      := retro imgio
 LDFLAGS   := option stack=24k library commdlg library shell

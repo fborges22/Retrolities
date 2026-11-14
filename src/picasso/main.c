@@ -27,7 +27,8 @@ int curTool = T_PENCIL, prevTool = T_PENCIL;
 int optOpaque, eraserIdx = 2, brushIdx = 1, sprayIdx, lineIdx, fillIdx;
 BOOL showGrid, dirty;
 char fileName[260];
-int saveBpp;
+int saveFmt = IMG_BMP, saveBpp;
+BOOL batchMode;
 LOGFONT textFont;
 
 static HWND hTip;
@@ -72,6 +73,8 @@ static const int zoomOpts[4] = { 1, 2, 6, 8 };
 
 void ErrorBox(const char *text)
 {
+    if (batchMode)
+        return;
     MessageBox(hFrame, text, "Picasso", MB_OK | MB_ICONEXCLAMATION);
 }
 
@@ -106,6 +109,11 @@ static void FillTrue(HDC hdc, const RECT *r, COLORREF c)    /* may dither */
 
     FillRect(hdc, r, br);
     DeleteObject(br);
+}
+
+static void FillPal(HDC hdc, const RECT *r, COLORREF c)     /* as the picture shows it */
+{
+    FillTrue(hdc, r, PalColor(c));
 }
 
 static void FillDither(HDC hdc, const RECT *r)
@@ -625,13 +633,13 @@ static void PaintIndicator(HDC hdc)
     InflateRect(&q, -1, -1);
     Frame(hdc, &q, cFace, cFace);
     InflateRect(&q, -1, -1);
-    FillTrue(hdc, &q, bgColor);
+    FillPal(hdc, &q, bgColor);
     SetRect(&q, r.left + 5, r.top + 5, r.left + 20, r.top + 20);
     Frame(hdc, &q, cHi, cSh);
     InflateRect(&q, -1, -1);
     Frame(hdc, &q, cFace, cFace);
     InflateRect(&q, -1, -1);
-    FillTrue(hdc, &q, fgColor);
+    FillPal(hdc, &q, fgColor);
 }
 
 static void PaintColors(HDC hdc)
@@ -646,7 +654,7 @@ static void PaintColors(HDC hdc)
         r.bottom--;
         Edge(hdc, &r, E_SUNKEN);
         InflateRect(&r, -2, -2);
-        FillTrue(hdc, &r, palette[i]);
+        FillPal(hdc, &r, palette[i]);
     }
 }
 
@@ -656,6 +664,7 @@ static void OnPaint(HWND hwnd)
     HDC hdc = BeginPaint(hwnd, &ps);
     RECT r;
 
+    PalSelect(hdc);
     if (showToolbar && IntersectRect(&r, &ps.rcPaint, &rcToolbar))
         PaintToolbar(hdc);
     if (showTools && IntersectRect(&r, &ps.rcPaint, &rcTools))
@@ -665,6 +674,7 @@ static void OnPaint(HWND hwnd)
     if (showStatus && IntersectRect(&r, &ps.rcPaint, &rcStatus))
         PaintStatus(hdc);
     Edge(hdc, &rcCanvas, E_SUNKEN);
+    PalUnselect(hdc);
     EndPaint(hwnd, &ps);
 }
 
@@ -945,7 +955,7 @@ BOOL CALLBACK __export AttrProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
             w = GetDlgItemInt(hDlg, IDC_WIDTH, &ok1, FALSE);
             h = GetDlgItemInt(hDlg, IDC_HEIGHT, &ok2, FALSE);
             if (!ok1 || !ok2 || w < 1 || h < 1 || w > MAXDIM || h > MAXDIM) {
-                MessageBox(hDlg, "Please enter a width and height between 1 and 2000 pixels.",
+                MessageBox(hDlg, "Please enter a width and height between 1 and 16000 pixels.",
                            "Attributes", MB_OK | MB_ICONEXCLAMATION);
                 return TRUE;
             }
@@ -981,12 +991,59 @@ static int DefaultBpp(void)
     return bits <= 1 ? 1 : bits <= 4 ? 4 : bits <= 8 ? 8 : 24;
 }
 
+/* Puts the colour box colours into the palette of a 256-colour display
+ * (while there is room), so they can be drawn with exactly. */
+static void AddColorBox(void)
+{
+    int i;
+
+    if (!hPal)
+        return;
+    for (i = 0; i < NCOLORS; i++)
+        Near(palette[i]);
+    if (hFrame)
+        InvalidateRect(hFrame, &rcColors, FALSE);
+}
+
+/* A blank, unnamed picture. */
+static BOOL NewPicture(void)
+{
+    PalSet(NULL, 0);
+    if (!NewImage(defW, defH))
+        return FALSE;
+    AddColorBox();
+    fileName[0] = '\0';
+    dirty = FALSE;
+    saveFmt = IMG_BMP;
+    saveBpp = DefaultBpp();
+    scrollX = scrollY = 0;
+    CanvasImageChanged();
+    return TRUE;
+}
+
+static BOOL HasExtension(const char *path)
+{
+    const char *p;
+    BOOL dot = FALSE;
+
+    for (p = path; *p; p++) {
+        if (*p == '.')
+            dot = TRUE;
+        else if (*p == '\\' || *p == '/' || *p == ':')
+            dot = FALSE;
+    }
+    return dot;
+}
+
 static BOOL DoSaveAs(void)
 {
     static const int depth[4] = { 1, 4, 8, 24 };
+    static const int formats[7] = { IMG_BMP, IMG_BMP, IMG_BMP, IMG_BMP, IMG_PNG, IMG_JPEG, IMG_TIFF };
+    static const char *exts[7] = { ".bmp", ".bmp", ".bmp", ".bmp", ".png", ".jpg", ".tif" };
     OPENFILENAME ofn;
-    char path[260];
-    int i;
+    OFSTRUCT of;
+    char path[260], msg[320];
+    int i, idx, fmt, bpp;
 
     strcpy(path, fileName);
     memset(&ofn, 0, sizeof(ofn));
@@ -995,20 +1052,39 @@ static BOOL DoSaveAs(void)
     ofn.lpstrFilter = "Monochrome Bitmap (*.bmp)\0*.bmp\0"
                       "16 Color Bitmap (*.bmp)\0*.bmp\0"
                       "256 Color Bitmap (*.bmp)\0*.bmp\0"
-                      "24-bit Bitmap (*.bmp)\0*.bmp\0";
-    for (i = 0; i < 4; i++)
-        if (depth[i] == saveBpp)
+                      "24-bit Bitmap (*.bmp)\0*.bmp\0"
+                      "PNG (*.png)\0*.png\0"
+                      "JPEG (*.jpg)\0*.jpg\0"
+                      "TIFF (*.tif)\0*.tif\0";
+    ofn.nFilterIndex = 4;
+    for (i = 0; i < 7; i++)
+        if (formats[i] == saveFmt && (saveFmt != IMG_BMP || depth[i] == saveBpp))
             ofn.nFilterIndex = i + 1;
     ofn.lpstrFile = path;
-    ofn.nMaxFile = sizeof(path);
-    ofn.lpstrDefExt = "bmp";
+    ofn.nMaxFile = sizeof(path) - 5;
     ofn.Flags = OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
     if (!GetSaveFileName(&ofn))
         return FALSE;
-    i = (ofn.nFilterIndex >= 1 && ofn.nFilterIndex <= 4) ? depth[(int)ofn.nFilterIndex - 1] : saveBpp;
-    if (!SaveBMP(path, i))
+    idx = (ofn.nFilterIndex >= 1 && ofn.nFilterIndex <= 7) ? (int)ofn.nFilterIndex - 1 : 3;
+
+    /* The extension decides the format; without one, the chosen type does. */
+    fmt = img_format_from_name(path);
+    if (fmt == IMG_NONE) {
+        fmt = formats[idx];
+        if (!HasExtension(path)) {
+            strcat(path, exts[idx]);
+            if (OpenFile(path, &of, OF_EXIST) != HFILE_ERROR) {
+                wsprintf(msg, "%s already exists.\nDo you want to replace it?", (LPSTR)path);
+                if (MessageBox(hFrame, msg, "Save As", MB_YESNO | MB_ICONEXCLAMATION) != IDYES)
+                    return FALSE;
+            }
+        }
+    }
+    bpp = (fmt == IMG_BMP && formats[idx] == IMG_BMP) ? depth[idx] : saveBpp;
+    if (!SaveImageFile(path, fmt, bpp))
         return FALSE;
-    saveBpp = i;
+    saveFmt = fmt;
+    saveBpp = bpp;
     strcpy(fileName, path);
     dirty = FALSE;
     return TRUE;
@@ -1020,7 +1096,7 @@ static BOOL DoSave(void)
     SelCommit();
     if (!fileName[0])
         return DoSaveAs();
-    if (!SaveBMP(fileName, saveBpp))
+    if (!SaveImageFile(fileName, saveFmt, saveBpp))
         return FALSE;
     dirty = FALSE;
     return TRUE;
@@ -1045,11 +1121,16 @@ static BOOL QuerySave(void)
 
 static void OpenPath(const char *path)
 {
-    if (LoadBMP(path)) {
+    BOOL reset;
+
+    if (LoadImageFile(path, &reset)) {
+        AddColorBox();
         strcpy(fileName, path);
         dirty = FALSE;
         scrollX = scrollY = 0;
         CanvasImageChanged();
+    } else if (reset) {
+        NewPicture();           /* the palette no longer suits the old picture */
     }
     UpdateUI();
 }
@@ -1065,7 +1146,12 @@ static void DoOpen(void)
     memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hFrame;
-    ofn.lpstrFilter = "Bitmap Files (*.bmp;*.dib)\0*.bmp;*.dib\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = "All Picture Files\0*.bmp;*.dib;*.rle;*.png;*.jpg;*.tif\0"
+                      "Bitmap Files (*.bmp;*.dib;*.rle)\0*.bmp;*.dib;*.rle\0"
+                      "PNG (*.png)\0*.png\0"
+                      "JPEG (*.jpg)\0*.jpg;*.jpe\0"
+                      "TIFF (*.tif)\0*.tif\0"
+                      "All Files (*.*)\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = sizeof(path);
     ofn.Flags = OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
@@ -1075,15 +1161,8 @@ static void DoOpen(void)
 
 static void DoNew(void)
 {
-    if (!QuerySave())
-        return;
-    if (NewImage(defW, defH)) {
-        fileName[0] = '\0';
-        dirty = FALSE;
-        saveBpp = DefaultBpp();
-        scrollX = scrollY = 0;
-        CanvasImageChanged();
-    }
+    if (QuerySave())
+        NewPicture();
 }
 
 static void DoFont(void)
@@ -1307,6 +1386,24 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             HideTip();
         break;
 
+    case WM_QUERYNEWPALETTE:            /* about to become the active window */
+    case WM_PALETTECHANGED:             /* another program changed the colours */
+        if (!hPal || (msg == WM_PALETTECHANGED && ((HWND)wParam == hwnd || (HWND)wParam == hCanvas)))
+            break;
+        {
+            HDC hdc = GetDC(hwnd);
+            UINT changed;
+
+            SelectPalette(hdc, hPal, FALSE);
+            changed = RealizePalette(hdc);
+            ReleaseDC(hwnd, hdc);
+            if (changed) {
+                InvalidateRect(hCanvas, NULL, FALSE);
+                InvalidateRect(hwnd, &rcColors, FALSE);
+            }
+            return changed != 0;
+        }
+
     case WM_SYSCOLORCHANGE:
         LoadColors();
         InvalidateRect(hwnd, NULL, TRUE);
@@ -1459,6 +1556,36 @@ static void FreeArt(void)
     DeleteObject(hFontUI);
 }
 
+/* "/convert input output": converts a picture file without showing a window
+ * (the output format follows the extension).  Returns 0 on success. */
+static int Batch(LPSTR args)
+{
+    char in[260], out[260];
+    BOOL reset;
+    int n, fmt, rc = 0;
+
+    batchMode = TRUE;
+    while (*args == ' ')
+        args++;
+    for (n = 0; *args && *args != ' ' && n < sizeof(in) - 1; n++)
+        in[n] = *args++;
+    in[n] = '\0';
+    while (*args == ' ')
+        args++;
+    for (n = 0; *args && *args != ' ' && n < sizeof(out) - 1; n++)
+        out[n] = *args++;
+    out[n] = '\0';
+    fmt = img_format_from_name(out);
+    if (!in[0] || fmt == IMG_NONE || !NewImage(8, 8))
+        rc = 1;
+    else if (!LoadImageFile(in, &reset))
+        rc = 2;
+    else if (!SaveImageFile(out, fmt, saveBpp))
+        rc = 3;
+    ImageDone();
+    return rc;
+}
+
 int PASCAL WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     HACCEL accel;
@@ -1475,8 +1602,15 @@ int PASCAL WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
         custColors[n] = RGB(255, 255, 255);
     defW = sw >= 800 ? 512 : 400;
     defH = sw >= 800 ? 320 : 240;
-    saveBpp = DefaultBpp();
-    if (!ImageInit() || !NewImage(defW, defH))
+    if (!ImageInit())
+        return 1;
+    PalInit();
+    while (*cmdline == ' ')
+        cmdline++;
+    lstrcpyn(path, cmdline, 10);
+    if (lstrcmpi(path, "/convert ") == 0)
+        return Batch(cmdline + 9);
+    if (!NewPicture())
         return 1;
 
     hFrame = CreateWindow("PicassoFrame", "Picasso", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -1490,6 +1624,7 @@ int PASCAL WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
                         hFrame, NULL, inst, NULL);
     Layout();
     CanvasImageChanged();
+    PalRealize();
     SetStatus(0);
     UpdateTitle();
     DragAcceptFiles(hFrame, TRUE);
