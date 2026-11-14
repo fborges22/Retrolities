@@ -21,7 +21,7 @@ Files are created as user 1000:1000; `export UID GID=$(id -g)` if yours differs.
 
 | Name      | Platforms | Description                                                   |
 |-----------|-----------|---------------------------------------------------------------|
-| `picasso` | `win16` `win9x` | Windows 95 style paint program for Windows 3.1 and Windows 9x (see below) |
+| `picasso` | `win16` `win9x` `winnt` | Windows 95 style paint program for Windows 3.1, 9x and NT/2000 (see below) |
 | `imgconv` | all       | converts pictures between BMP, PNG, JPEG and TIFF (see below) |
 | `hello`   | all       | sample console program                                        |
 | `hellowin`| Windows   | sample GUI program with resources                             |
@@ -122,8 +122,9 @@ The script is sourced with the helpers `shot`, `click`, `dclick`, `drag` and
 ## Picasso
 
 `build/win16/bin/PICASSO.EXE` is a single-file paint program for Windows 3.1
-and `build/win9x/bin/PICASSO.EXE` is its Win32 port for Windows 95/98/ME (it
-also runs on Windows NT 4.0 and later), built from the same sources, with long
+and its Win32 ports are `build/win9x/bin/PICASSO.EXE` for Windows 95/98/ME and
+`build/winnt/bin/PICASSO.EXE` for Windows NT 4.0 / 2000 (Pentium-tuned), all
+built from the same sources. The Win32 ports use the ANSI API, with long
 file names and the Explorer-style file dialogs. Both have the look and feel
 of Windows 95 Paint: 3-D toolbar with tool tips, tool
 box with per-tool options, color box, status bar with hints, cursor position

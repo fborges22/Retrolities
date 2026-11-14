@@ -12,7 +12,7 @@ png24.png:q19.png:0 png8.png:q20.png:0 png24.png:q21.tif:0 png8.png:q22.tif:0 pn
 jpg.jpg:q24.png:40 tiflzw.tif:q25.png:0 bmp4.bmp:q26.png:0"
 
 if command -v Xvfb >/dev/null; then
-    for pc_plat in win16 win9x; do
+    for pc_plat in win16 win9x winnt; do
         [ -f build/$pc_plat/bin/PICASSO.EXE ] || continue
         mkdir -p "$tmp/ic"
         [ -d "$tmp/ic/img" ] || tests/images/make.sh "$tmp/ic/img" >/dev/null 2>&1
