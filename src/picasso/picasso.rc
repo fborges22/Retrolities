@@ -1,0 +1,217 @@
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP      ICON   "res/picasso.ico"
+IDB_TOOLBAR  BITMAP "res/toolbar.bmp"
+IDB_TOOLBARM BITMAP "res/toolbarm.bmp"
+IDB_TOOLBARD BITMAP "res/toolbard.bmp"
+IDB_TOOLS    BITMAP "res/tools.bmp"
+IDB_TOOLSM   BITMAP "res/toolsm.bmp"
+IDC_PENCIL   CURSOR "res/pencil.cur"
+IDC_FILL     CURSOR "res/fill.cur"
+IDC_PICKER   CURSOR "res/picker.cur"
+IDC_ZOOM     CURSOR "res/zoom.cur"
+IDC_BRUSH    CURSOR "res/brush.cur"
+IDC_SPRAY    CURSOR "res/spray.cur"
+IDC_ERASER   CURSOR "res/eraser.cur"
+
+IDR_MENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&New\tCtrl+N",            IDM_NEW
+        MENUITEM "&Open...\tCtrl+O",        IDM_OPEN
+        MENUITEM "&Save\tCtrl+S",           IDM_SAVE
+        MENUITEM "Save &As...",             IDM_SAVEAS
+        MENUITEM SEPARATOR
+        MENUITEM "&Print...\tCtrl+P",       IDM_PRINT
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit\tAlt+F4",           IDM_EXIT
+    END
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "&Undo\tCtrl+Z",           IDM_UNDO
+        MENUITEM "&Repeat\tF4",             IDM_REDO
+        MENUITEM SEPARATOR
+        MENUITEM "Cu&t\tCtrl+X",            IDM_CUT
+        MENUITEM "&Copy\tCtrl+C",           IDM_COPY
+        MENUITEM "&Paste\tCtrl+V",          IDM_PASTE
+        MENUITEM "C&lear Selection\tDel",   IDM_CLEARSEL
+        MENUITEM "Select &All\tCtrl+A",     IDM_SELALL
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Toolbar",                IDM_VTOOLBAR
+        MENUITEM "Tool &Box\tCtrl+T",       IDM_VTOOLBOX
+        MENUITEM "&Color Box\tCtrl+L",      IDM_VCOLORBOX
+        MENUITEM "&Status Bar",             IDM_VSTATUS
+        MENUITEM SEPARATOR
+        POPUP "&Zoom"
+        BEGIN
+            MENUITEM "&Normal Size\tCtrl+PgUp", IDM_ZOOM1
+            MENUITEM "&200%",                   IDM_ZOOM2
+            MENUITEM "&Large Size\tCtrl+PgDn",  IDM_ZOOM4
+            MENUITEM "&600%",                   IDM_ZOOM6
+            MENUITEM "&800%",                   IDM_ZOOM8
+            MENUITEM SEPARATOR
+            MENUITEM "Zoom &In\tCtrl++",        IDM_ZOOMIN
+            MENUITEM "Zoom &Out\tCtrl+-",       IDM_ZOOMOUT
+        END
+        MENUITEM "Show &Grid\tCtrl+G",      IDM_GRID
+    END
+    POPUP "&Image"
+    BEGIN
+        POPUP "&Flip/Rotate"
+        BEGIN
+            MENUITEM "Flip &Horizontal",        IDM_FLIPH
+            MENUITEM "Flip &Vertical",          IDM_FLIPV
+            MENUITEM SEPARATOR
+            MENUITEM "Rotate &Right 90\260",    IDM_ROT90
+            MENUITEM "Rotate &Left 90\260",     IDM_ROT270
+            MENUITEM "Rotate &180\260",         IDM_ROT180
+        END
+        MENUITEM "&Invert Colors\tCtrl+I",  IDM_INVERT
+        MENUITEM "&Attributes...\tCtrl+E",  IDM_ATTR
+        MENUITEM "&Clear Image\tCtrl+Shift+N", IDM_CLEARIMG
+    END
+    POPUP "&Options"
+    BEGIN
+        MENUITEM "&Edit Colors...",         IDM_EDITCOLORS
+        MENUITEM "S&wap Colors\tCtrl+W",    IDM_SWAPCOLORS
+        MENUITEM "Text &Font...",           IDM_FONT
+        MENUITEM SEPARATOR
+        MENUITEM "&Draw Opaque",            IDM_OPAQUE
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About Picasso...",       IDM_ABOUT
+    END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "N",        IDM_NEW,        VIRTKEY, CONTROL
+    "O",        IDM_OPEN,       VIRTKEY, CONTROL
+    "S",        IDM_SAVE,       VIRTKEY, CONTROL
+    "P",        IDM_PRINT,      VIRTKEY, CONTROL
+    "Z",        IDM_UNDO,       VIRTKEY, CONTROL
+    VK_BACK,    IDM_UNDO,       VIRTKEY, ALT
+    VK_F4,      IDM_REDO,       VIRTKEY
+    "Y",        IDM_REDO,       VIRTKEY, CONTROL
+    "X",        IDM_CUT,        VIRTKEY, CONTROL
+    "C",        IDM_COPY,       VIRTKEY, CONTROL
+    "V",        IDM_PASTE,      VIRTKEY, CONTROL
+    VK_DELETE,  IDM_CUT,        VIRTKEY, SHIFT
+    VK_INSERT,  IDM_COPY,       VIRTKEY, CONTROL
+    VK_INSERT,  IDM_PASTE,      VIRTKEY, SHIFT
+    VK_DELETE,  IDM_CLEARSEL,   VIRTKEY
+    "A",        IDM_SELALL,     VIRTKEY, CONTROL
+    "T",        IDM_VTOOLBOX,   VIRTKEY, CONTROL
+    "L",        IDM_VCOLORBOX,  VIRTKEY, CONTROL
+    "G",        IDM_GRID,       VIRTKEY, CONTROL
+    VK_PRIOR,   IDM_ZOOM1,      VIRTKEY, CONTROL
+    VK_NEXT,    IDM_ZOOM4,      VIRTKEY, CONTROL
+    VK_ADD,     IDM_ZOOMIN,     VIRTKEY, CONTROL
+    VK_SUBTRACT, IDM_ZOOMOUT,   VIRTKEY, CONTROL
+    "I",        IDM_INVERT,     VIRTKEY, CONTROL
+    "E",        IDM_ATTR,       VIRTKEY, CONTROL
+    "N",        IDM_CLEARIMG,   VIRTKEY, CONTROL, SHIFT
+    "W",        IDM_SWAPCOLORS, VIRTKEY, CONTROL
+END
+
+/* "status bar text\ntool tip" */
+STRINGTABLE
+BEGIN
+    IDM_NEW,        "Creates a new picture.\nNew"
+    IDM_OPEN,       "Opens an existing bitmap.\nOpen"
+    IDM_SAVE,       "Saves the picture.\nSave"
+    IDM_SAVEAS,     "Saves the picture with a new name or colour depth."
+    IDM_PRINT,      "Prints the picture.\nPrint"
+    IDM_EXIT,       "Quits Picasso."
+    IDM_UNDO,       "Undoes the last action.\nUndo"
+    IDM_REDO,       "Repeats the last undone action.\nRepeat"
+    IDM_CUT,        "Cuts the selection and puts it on the Clipboard.\nCut"
+    IDM_COPY,       "Copies the selection to the Clipboard.\nCopy"
+    IDM_PASTE,      "Inserts the contents of the Clipboard.\nPaste"
+    IDM_CLEARSEL,   "Deletes the selection."
+    IDM_SELALL,     "Selects the whole picture."
+    IDM_VTOOLBAR,   "Shows or hides the toolbar."
+    IDM_VTOOLBOX,   "Shows or hides the tool box."
+    IDM_VCOLORBOX,  "Shows or hides the color box."
+    IDM_VSTATUS,    "Shows or hides the status bar."
+    IDM_ZOOM1,      "Shows the picture at normal size."
+    IDM_ZOOM2,      "Zooms the picture to 200%."
+    IDM_ZOOM4,      "Zooms the picture to 400%."
+    IDM_ZOOM6,      "Zooms the picture to 600%."
+    IDM_ZOOM8,      "Zooms the picture to 800%."
+    IDM_GRID,       "Shows or hides the pixel grid (when zoomed to 400% or more).\nShow Grid"
+    IDM_ZOOMIN,     "Magnifies the picture.\nZoom In"
+    IDM_ZOOMOUT,    "Reduces the magnification.\nZoom Out"
+    IDM_FLIPH,      "Flips the picture or selection horizontally."
+    IDM_FLIPV,      "Flips the picture or selection vertically."
+    IDM_ROT90,      "Rotates the picture or selection 90 degrees clockwise."
+    IDM_ROT180,     "Rotates the picture or selection 180 degrees."
+    IDM_ROT270,     "Rotates the picture or selection 90 degrees counter-clockwise."
+    IDM_INVERT,     "Inverts the colors of the picture or selection."
+    IDM_ATTR,       "Changes the size of the picture."
+    IDM_CLEARIMG,   "Clears the picture or selection to the background color."
+    IDM_EDITCOLORS, "Changes the selected color of the color box."
+    IDM_OPAQUE,     "Makes selections and text opaque or transparent."
+    IDM_FONT,       "Chooses the font used by the Text tool."
+    IDM_SWAPCOLORS, "Swaps the foreground and background colors."
+    IDM_ABOUT,      "Displays program and system information.\nAbout Picasso"
+    IDM_TOOL0 + 0,  "Selects a free-form part of the picture to move, copy, or edit.\nFree-Form Select"
+    IDM_TOOL0 + 1,  "Selects a rectangular part of the picture to move, copy, or edit.\nSelect"
+    IDM_TOOL0 + 2,  "Erases a portion of the picture, using the selected eraser shape.\nEraser"
+    IDM_TOOL0 + 3,  "Fills an area with the current drawing color.\nFill With Color"
+    IDM_TOOL0 + 4,  "Picks up a color from the picture for drawing.\nPick Color"
+    IDM_TOOL0 + 5,  "Changes the magnification.\nMagnifier"
+    IDM_TOOL0 + 6,  "Draws a free-form line one pixel wide.\nPencil"
+    IDM_TOOL0 + 7,  "Draws using a brush with the selected shape and size.\nBrush"
+    IDM_TOOL0 + 8,  "Draws using an airbrush of the selected size.\nAirbrush"
+    IDM_TOOL0 + 9,  "Inserts text into the picture.\nText"
+    IDM_TOOL0 + 10, "Draws a straight line with the selected line width.\nLine"
+    IDM_TOOL0 + 11, "Draws a curved line with the selected line width.\nCurve"
+    IDM_TOOL0 + 12, "Draws a rectangle with the selected fill style.\nRectangle"
+    IDM_TOOL0 + 13, "Draws a polygon with the selected fill style.\nPolygon"
+    IDM_TOOL0 + 14, "Draws an ellipse with the selected fill style.\nEllipse"
+    IDM_TOOL0 + 15, "Draws a rounded rectangle with the selected fill style.\nRounded Rectangle"
+    IDS_COLORHINT,  "Left-click sets the foreground color, right-click the background; double-click edits."
+    IDS_OPTHINT,    "Options for the selected tool."
+    IDS_INDHINT,    "Foreground and background colors. Click to swap them."
+    IDS_READY,      "Ready"
+END
+
+IDD_ABOUT DIALOG 30, 30, 196, 112
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Picasso"
+FONT 8, "MS Sans Serif"
+BEGIN
+    ICON    "", IDC_APPICON, 10, 10, 18, 20
+    LTEXT   "Picasso", -1, 40, 8, 150, 8
+    LTEXT   "Version 1.0 for Windows 3.x", -1, 40, 19, 150, 8
+    LTEXT   "A Windows 95 style paint program.", -1, 40, 30, 150, 8
+    LTEXT   "Part of Retrolities - built with Open Watcom.", -1, 40, 41, 150, 8
+    CONTROL "", -1, "static", SS_BLACKFRAME, 40, 56, 146, 1
+    LTEXT   "Memory available:", -1, 40, 62, 70, 8
+    LTEXT   "", IDC_MEMORY, 112, 62, 74, 8
+    LTEXT   "System resources:", -1, 40, 73, 70, 8
+    LTEXT   "", IDC_RESOURCES, 112, 73, 74, 8
+    DEFPUSHBUTTON "OK", IDOK, 136, 92, 50, 14
+END
+
+IDD_ATTR DIALOG 30, 30, 170, 66
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Attributes"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT   "&Width:", -1, 8, 12, 26, 8
+    EDITTEXT IDC_WIDTH, 36, 10, 34, 12, ES_AUTOHSCROLL
+    LTEXT   "&Height:", -1, 8, 30, 26, 8
+    EDITTEXT IDC_HEIGHT, 36, 28, 34, 12, ES_AUTOHSCROLL
+    LTEXT   "pixels", -1, 74, 12, 30, 8
+    LTEXT   "pixels", -1, 74, 30, 30, 8
+    DEFPUSHBUTTON "OK", IDOK, 112, 8, 50, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 112, 26, 50, 14
+    PUSHBUTTON "&Default", IDC_DEFAULT, 112, 44, 50, 14
+END

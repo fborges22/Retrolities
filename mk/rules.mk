@@ -123,6 +123,9 @@ $(OBJ_DIR)/%.res: $(DIR)/%.rc | $(OBJ_DIR)
 	$(call say,RC,$<)
 	$(Q)wrc $(RCFLAGS_ALL) -fo=$@ $<
 
+# Resources also depend on the project's headers and on the files in res/.
+$(RES_FILE): $(wildcard $(DIR)/*.h $(DIR)/res/*)
+
 # Everything is rebuilt when the build system or the module description changes.
 $(OBJS) $(RES_FILE): $(DIR)/project.mk mk/rules.mk mk/platform/$(PLATFORM).mk
 
