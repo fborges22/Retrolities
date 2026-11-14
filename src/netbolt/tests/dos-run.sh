@@ -29,7 +29,7 @@ tcp_port_forwards=5292:5201
 mount c $D
 c:
 ne2000 0x60 3 0x300 > NE.TXT
-set MTCPCFG=c:\\mtcp.cfg
+set MTCPCFG=MTCP.CFG
 EOC
 for l in "$@"; do echo "$l" >> /tmp/dbx.conf; done
 echo exit >> /tmp/dbx.conf
@@ -40,6 +40,10 @@ PID=$!
 if [ "$SHOT" != "-" ]; then
     sleep $(( T - 3 ))
     import -window root -bordercolor black -border 1 -trim +repage "$SHOT"
+    if [ -f "${SHOT%.png}-0.png" ]; then
+        mv "${SHOT%.png}-0.png" "$SHOT"
+        rm -f "${SHOT%.png}-1.png"
+    fi
 fi
 wait $PID
 cat $D/OUT*.TXT 2>/dev/null
