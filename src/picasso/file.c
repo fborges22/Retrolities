@@ -226,7 +226,6 @@ BOOL SaveImageFile(const char *path, int format, int bpp)
     IMGIO io;
     HBITMAP stock;
     HCURSOR oldCur;
-    OFSTRUCT of;
     BOOL ok;
 
     memset(&ctx, 0, sizeof(ctx));
@@ -270,7 +269,7 @@ BOOL SaveImageFile(const char *path, int format, int bpp)
     free(ctx.row);
     SetCursor(oldCur);
     if (!ok) {
-        OpenFile(path, &of, OF_DELETE);
+        FILE_DELETE(path);
         ErrorBox(io.error ? io.error : "The picture could not be saved (is the disk full?).");
     }
     return ok;

@@ -7,11 +7,40 @@
 #include <shellapi.h>
 #include <stdlib.h>
 #include <string.h>
+#include "retro.h"
 #include "imgio.h"
 #include "resource.h"
 
 #define MAXDIM      IMG_MAXDIM  /* largest picture width / height */
 #define MAXUNDO     3
+
+/* ---- Win16 / Win32 differences ---- */
+#ifdef RETRO_WIN32
+#define __export
+#define MoveTo(hdc, x, y)       MoveToEx(hdc, x, y, NULL)
+#define CMD_ID(wp)              LOWORD(wp)
+#define SCROLL_CODE(wp)         LOWORD(wp)
+#define SCROLL_POS(wp, lp)      HIWORD(wp)
+#define MENUSEL_ITEM(wp)        LOWORD(wp)
+#define MENUSEL_FLAGS(wp, lp)   HIWORD(wp)
+#define MENUSEL_CLOSED(wp, lp)  (HIWORD(wp) == 0xFFFF && (lp) == 0)
+#define IS_CTLCOLOR(msg)        ((msg) == WM_CTLCOLORDLG || (msg) == WM_CTLCOLORSTATIC || (msg) == WM_CTLCOLORBTN)
+#define FILE_EXISTS(path)       (GetFileAttributes(path) != 0xFFFFFFFFUL)
+#define FILE_DELETE(path)       DeleteFile(path)
+#else
+#define CMD_ID(wp)              (wp)
+#define SCROLL_CODE(wp)         (wp)
+#define SCROLL_POS(wp, lp)      LOWORD(lp)
+#define MENUSEL_ITEM(wp)        (wp)
+#define MENUSEL_FLAGS(wp, lp)   LOWORD(lp)
+#define MENUSEL_CLOSED(wp, lp)  (LOWORD(lp) == 0xFFFF && HIWORD(lp) == 0)
+#define IS_CTLCOLOR(msg)        ((msg) == WM_CTLCOLOR && HIWORD(lParam) != CTLCOLOR_EDIT \
+                                 && HIWORD(lParam) != CTLCOLOR_LISTBOX && HIWORD(lParam) != CTLCOLOR_SCROLLBAR)
+#define FILE_EXISTS(path)       FileOp(path, OF_EXIST)
+#define FILE_DELETE(path)       FileOp(path, OF_DELETE)
+#endif
+#define MOUSE_X(lp)             ((int)(short)LOWORD(lp))
+#define MOUSE_Y(lp)             ((int)(short)HIWORD(lp))
 
 #define SAMECOLOR(a, b) ((((a) ^ (b)) & 0x00FFFFFFL) == 0)
 
@@ -56,6 +85,7 @@ void SetStatusPos(int x, int y);        /* x < 0 clears */
 void SetStatusSize(int w, int h);       /* w < 0 clears */
 void UpdateUI(void);
 void ErrorBox(const char *text);
+BOOL FileOp(const char *path, UINT op);
 
 /* ---- image.c ---- */
 extern HDC hdcImg;

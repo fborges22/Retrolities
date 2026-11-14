@@ -189,14 +189,22 @@ FONT 8, "MS Sans Serif"
 BEGIN
     ICON    "", IDC_APPICON, 10, 10, 18, 20
     LTEXT   "Picasso", -1, 40, 8, 160, 8
+#ifdef RETRO_WIN16
     LTEXT   "Version 1.0 for Windows 3.x", -1, 40, 19, 160, 8
+#else
+    LTEXT   "Version 1.0 for Windows 95", -1, 40, 19, 160, 8
+#endif
     LTEXT   "A Windows 95 style paint program.", -1, 40, 30, 160, 8
     LTEXT   "Developed by Felipe Andrade Allemand Borges.", -1, 40, 44, 160, 8
     LTEXT   "Part of Retrolities - built with Open Watcom.", -1, 40, 55, 160, 8
     CONTROL "", -1, "static", SS_BLACKFRAME, 40, 70, 156, 1
     LTEXT   "Memory available:", -1, 40, 76, 70, 8
     LTEXT   "", IDC_MEMORY, 112, 76, 84, 8
+#ifdef RETRO_WIN16
     LTEXT   "System resources:", -1, 40, 87, 70, 8
+#else
+    LTEXT   "Memory in use:", -1, 40, 87, 70, 8
+#endif
     LTEXT   "", IDC_RESOURCES, 112, 87, 84, 8
     DEFPUSHBUTTON "OK", IDOK, 146, 106, 50, 14
 END

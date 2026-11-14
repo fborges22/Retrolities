@@ -71,6 +71,14 @@ static const struct { int cmd, glyph; } tbBtns[] = {
 static const int zoomLevels[5] = { 1, 2, 4, 6, 8 };
 static const int zoomOpts[4] = { 1, 2, 6, 8 };
 
+/* OpenFile based test (OF_EXIST) or removal (OF_DELETE) of a file. */
+BOOL FileOp(const char *path, UINT op)
+{
+    OFSTRUCT of;
+
+    return OpenFile(path, &of, op) != HFILE_ERROR;
+}
+
 void ErrorBox(const char *text)
 {
     if (batchMode)
@@ -798,7 +806,7 @@ static void ShowTip(void)
     POINT pt;
     HDC hdc;
     HFONT of;
-    DWORD ext;
+    SIZE ext;
     int w, h, sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
 
     buf[0] = '\0';
@@ -809,11 +817,11 @@ static void ShowTip(void)
     lstrcpyn(tipText, nl + 1, sizeof(tipText));
     hdc = GetDC(hTip);
     of = SelectObject(hdc, hFontUI);
-    ext = GetTextExtent(hdc, tipText, lstrlen(tipText));
+    GetTextExtentPoint(hdc, tipText, lstrlen(tipText), &ext);
     SelectObject(hdc, of);
     ReleaseDC(hTip, hdc);
-    w = LOWORD(ext) + 8;
-    h = HIWORD(ext) + 6;
+    w = ext.cx + 8;
+    h = ext.cy + 6;
     GetCursorPos(&pt);
     pt.y += 20;
     if (pt.x + w > sw) pt.x = sw - w;
@@ -883,9 +891,8 @@ static BOOL DlgLook(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam, BOOL *res
     static HBRUSH br;
     static COLORREF brColor;
     RECT r;
-    int type;
 
-    if (msg != WM_CTLCOLOR && msg != WM_ERASEBKGND)
+    if (!IS_CTLCOLOR(msg) && msg != WM_ERASEBKGND)
         return FALSE;
     if (!br || brColor != cFace) {
         if (br)
@@ -899,12 +906,10 @@ static BOOL DlgLook(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam, BOOL *res
         *res = TRUE;
         return TRUE;
     }
-    type = HIWORD(lParam);
-    if (type == CTLCOLOR_EDIT || type == CTLCOLOR_LISTBOX || type == CTLCOLOR_SCROLLBAR)
-        return FALSE;
+    (void)lParam;
     SetBkColor((HDC)wParam, cFace);
     SetTextColor((HDC)wParam, cText);
-    *res = (BOOL)(UINT)br;
+    *res = (BOOL)(UINT)(DWORD)br;
     return TRUE;
 }
 
@@ -919,13 +924,26 @@ BOOL CALLBACK __export AboutProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_INITDIALOG:
         SendDlgItemMessage(hDlg, IDC_APPICON, STM_SETICON,
                            (WPARAM)LoadIcon(hInst, MAKEINTRESOURCE(IDI_APP)), 0);
+#ifdef RETRO_WIN32
+        {
+            MEMORYSTATUS ms;
+
+            ms.dwLength = sizeof(ms);
+            GlobalMemoryStatus(&ms);
+            wsprintf(buf, "%lu KB free", (DWORD)(ms.dwAvailPhys / 1024));
+            SetDlgItemText(hDlg, IDC_MEMORY, buf);
+            wsprintf(buf, "%lu%%", (DWORD)ms.dwMemoryLoad);
+            SetDlgItemText(hDlg, IDC_RESOURCES, buf);
+        }
+#else
         wsprintf(buf, "%lu KB free", GetFreeSpace(0) / 1024);
         SetDlgItemText(hDlg, IDC_MEMORY, buf);
         wsprintf(buf, "%u%% free", GetFreeSystemResources(GFSR_SYSTEMRESOURCES));
         SetDlgItemText(hDlg, IDC_RESOURCES, buf);
+#endif
         return TRUE;
     case WM_COMMAND:
-        if (wParam == IDOK || wParam == IDCANCEL)
+        if (CMD_ID(wParam) == IDOK || CMD_ID(wParam) == IDCANCEL)
             EndDialog(hDlg, TRUE);
         return TRUE;
     }
@@ -946,7 +964,7 @@ BOOL CALLBACK __export AttrProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
         SendDlgItemMessage(hDlg, IDC_WIDTH, EM_SETSEL, 0, MAKELPARAM(0, -1));
         return TRUE;
     case WM_COMMAND:
-        switch (wParam) {
+        switch (CMD_ID(wParam)) {
         case IDC_DEFAULT:
             SetDlgItemInt(hDlg, IDC_WIDTH, defW, FALSE);
             SetDlgItemInt(hDlg, IDC_HEIGHT, defH, FALSE);
@@ -1041,7 +1059,6 @@ static BOOL DoSaveAs(void)
     static const int formats[7] = { IMG_BMP, IMG_BMP, IMG_BMP, IMG_BMP, IMG_PNG, IMG_JPEG, IMG_TIFF };
     static const char *exts[7] = { ".bmp", ".bmp", ".bmp", ".bmp", ".png", ".jpg", ".tif" };
     OPENFILENAME ofn;
-    OFSTRUCT of;
     char path[260], msg[320];
     int i, idx, fmt, bpp;
 
@@ -1073,7 +1090,7 @@ static BOOL DoSaveAs(void)
         fmt = formats[idx];
         if (!HasExtension(path)) {
             strcat(path, exts[idx]);
-            if (OpenFile(path, &of, OF_EXIST) != HFILE_ERROR) {
+            if (FILE_EXISTS(path)) {
                 wsprintf(msg, "%s already exists.\nDo you want to replace it?", (LPSTR)path);
                 if (MessageBox(hFrame, msg, "Save As", MB_YESNO | MB_ICONEXCLAMATION) != IDYES)
                     return FALSE;
@@ -1380,7 +1397,7 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_ACTIVATE:
-        if (wParam != WA_INACTIVE)
+        if (LOWORD(wParam) != WA_INACTIVE)
             UpdateUI();
         else
             HideTip();
@@ -1410,8 +1427,8 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_MOUSEMOVE:
-        pt.x = (int)LOWORD(lParam);
-        pt.y = (int)HIWORD(lParam);
+        pt.x = MOUSE_X(lParam);
+        pt.y = MOUSE_Y(lParam);
         it = HitTest(pt);
         if (pressItem) {
             if ((it == pressItem) != pressIn) {
@@ -1427,8 +1444,8 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN:
     case WM_RBUTTONDBLCLK:
-        pt.x = (int)LOWORD(lParam);
-        pt.y = (int)HIWORD(lParam);
+        pt.x = MOUSE_X(lParam);
+        pt.y = MOUSE_Y(lParam);
         OnMouseDown(hwnd, pt, msg == WM_RBUTTONDOWN || msg == WM_RBUTTONDBLCLK,
                     msg == WM_LBUTTONDBLCLK);
         return 0;
@@ -1450,7 +1467,7 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_COMMAND:
-        OnCommand((int)wParam);
+        OnCommand((int)CMD_ID(wParam));
         return 0;
 
     case WM_INITMENUPOPUP:
@@ -1458,12 +1475,12 @@ LRESULT CALLBACK __export FrameProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_MENUSELECT:
-        if (LOWORD(lParam) == 0xFFFF && HIWORD(lParam) == 0)
+        if (MENUSEL_CLOSED(wParam, lParam))
             SetStatus(0);
-        else if (LOWORD(lParam) & (MF_POPUP | MF_SEPARATOR | MF_SYSMENU))
+        else if (MENUSEL_FLAGS(wParam, lParam) & (MF_POPUP | MF_SEPARATOR | MF_SYSMENU))
             SetStatus(-1);
         else
-            SetStatus((int)wParam);
+            SetStatus((int)MENUSEL_ITEM(wParam));
         return 0;
 
     case WM_DROPFILES:
@@ -1556,25 +1573,36 @@ static void FreeArt(void)
     DeleteObject(hFontUI);
 }
 
+/* Copies the next command line argument (optionally quoted) into buf and
+ * returns the position after it. */
+static LPSTR NextArg(LPSTR args, char *buf, int size)
+{
+    BOOL quoted = FALSE;
+    int n = 0;
+
+    while (*args == ' ')
+        args++;
+    for (; *args && (quoted || *args != ' '); args++) {
+        if (*args == '"')
+            quoted = !quoted;
+        else if (n < size - 1)
+            buf[n++] = *args;
+    }
+    buf[n] = '\0';
+    return args;
+}
+
 /* "/convert input output": converts a picture file without showing a window
  * (the output format follows the extension).  Returns 0 on success. */
 static int Batch(LPSTR args)
 {
     char in[260], out[260];
     BOOL reset;
-    int n, fmt, rc = 0;
+    int fmt, rc = 0;
 
     batchMode = TRUE;
-    while (*args == ' ')
-        args++;
-    for (n = 0; *args && *args != ' ' && n < sizeof(in) - 1; n++)
-        in[n] = *args++;
-    in[n] = '\0';
-    while (*args == ' ')
-        args++;
-    for (n = 0; *args && *args != ' ' && n < sizeof(out) - 1; n++)
-        out[n] = *args++;
-    out[n] = '\0';
+    args = NextArg(args, in, sizeof(in));
+    NextArg(args, out, sizeof(out));
     fmt = img_format_from_name(out);
     if (!in[0] || fmt == IMG_NONE || !NewImage(8, 8))
         rc = 1;

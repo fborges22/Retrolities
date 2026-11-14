@@ -341,6 +341,7 @@ static void TextRender(void)
 {
     HFONT font, of;
     TEXTMETRIC tm;
+    SIZE ext;
     RECT b;
     int i, start = 0, line = 0, maxw = 0, w;
 
@@ -356,7 +357,8 @@ static void TextRender(void)
         if (i < textLen && textBuf[i] != '\n')
             continue;
         TextOut(hdcImg, textPos.x, textPos.y + line * textLineH, textBuf + start, i - start);
-        w = LOWORD(GetTextExtent(hdcImg, textBuf + start, i - start));
+        GetTextExtentPoint(hdcImg, textBuf + start, i - start, &ext);
+        w = ext.cx;
         if (w > maxw)
             maxw = w;
         if (i == textLen) {
@@ -1116,11 +1118,11 @@ LRESULT CALLBACK __export CanvasProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         return 0;
 
     case WM_HSCROLL:
-        OnScroll(hwnd, SB_HORZ, wParam, LOWORD(lParam));
+        OnScroll(hwnd, SB_HORZ, SCROLL_CODE(wParam), SCROLL_POS(wParam, lParam));
         return 0;
 
     case WM_VSCROLL:
-        OnScroll(hwnd, SB_VERT, wParam, LOWORD(lParam));
+        OnScroll(hwnd, SB_VERT, SCROLL_CODE(wParam), SCROLL_POS(wParam, lParam));
         return 0;
 
     case WM_LBUTTONDBLCLK:
@@ -1131,24 +1133,24 @@ LRESULT CALLBACK __export CanvasProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         /* fall through */
     case WM_LBUTTONDOWN:
-        OnDown(hwnd, (int)LOWORD(lParam), (int)HIWORD(lParam), FALSE, wParam);
+        OnDown(hwnd, MOUSE_X(lParam), MOUSE_Y(lParam), FALSE, wParam);
         return 0;
 
     case WM_RBUTTONDBLCLK:
     case WM_RBUTTONDOWN:
-        OnDown(hwnd, (int)LOWORD(lParam), (int)HIWORD(lParam), TRUE, wParam);
+        OnDown(hwnd, MOUSE_X(lParam), MOUSE_Y(lParam), TRUE, wParam);
         return 0;
 
     case WM_MOUSEMOVE:
-        OnMove(hwnd, (int)LOWORD(lParam), (int)HIWORD(lParam), wParam);
+        OnMove(hwnd, MOUSE_X(lParam), MOUSE_Y(lParam), wParam);
         return 0;
 
     case WM_LBUTTONUP:
-        OnUp(hwnd, (int)LOWORD(lParam), (int)HIWORD(lParam), FALSE);
+        OnUp(hwnd, MOUSE_X(lParam), MOUSE_Y(lParam), FALSE);
         return 0;
 
     case WM_RBUTTONUP:
-        OnUp(hwnd, (int)LOWORD(lParam), (int)HIWORD(lParam), TRUE);
+        OnUp(hwnd, MOUSE_X(lParam), MOUSE_Y(lParam), TRUE);
         return 0;
 
     case WM_TIMER:
