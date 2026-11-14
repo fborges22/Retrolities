@@ -1,4 +1,4 @@
-// NetBolt - ip3net.h backend for DOS on top of mTCP (packet driver)
+// Arrow - ip3net.h backend for DOS on top of mTCP (packet driver)
 #include <dos.h>
 #include <stdio.h>
 #include <stdlib.h>

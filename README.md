@@ -7,9 +7,9 @@ in Docker.
 ## Quick start
 
 ```sh
-docker compose run --rm build                    # build all utilities and NetBolt targets
+docker compose run --rm build                    # build all utilities and Arrow targets
 docker compose run --rm build make dos           # build one platform
-docker compose run --rm build make win64         # NetBolt and Picasso for x64 Windows
+docker compose run --rm build make win64         # Arrow and Picasso for x64 Windows
 docker compose run --rm build make help          # list targets
 docker compose run --rm test                     # format, smoke and protocol tests
 docker compose run --rm build bash               # open the build environment
@@ -22,7 +22,7 @@ Compose.
 
 ### Build and package
 
-Run the Python helper from the host to build all projects, including NetBolt's
+Run the Python helper from the host to build all projects, including Arrow's
 six platform targets, and create a single ZIP:
 
 ```sh
@@ -33,12 +33,12 @@ python3 tools/build_pack.py --output build/release.zip
 The helper builds the Docker build image as needed and runs `make all`.
 The default archive is `build/retrolities.zip`. It contains only `.EXE` and
 `.COM` files from `build/<platform>/bin/`, all at the ZIP root. Unique 8.3
-names (such as `NETBOLTD.EXE`) are preserved. Duplicate names receive short
+names (such as `ARROWD.EXE`) are preserved. Duplicate names receive short
 platform suffixes: `D`, `2`, `16`, `9X`, `NT`, `64`; stems are shortened to
 keep 8.3 format (for example, `HELLO16.EXE` and `PICASSNT.EXE`). Any remaining
 collisions receive a numeric suffix. Longer names are shortened while
-retaining platform suffixes (for example, `NETBOLT64.EXE` becomes
-`NETBOL64.EXE`). Renaming affects only ZIP entries, not
+retaining platform suffixes (for example, `TOOLNAME64.EXE` becomes
+`TOOLNA64.EXE`). Renaming affects only ZIP entries, not
 the original build files.
 
 Existing build files are retained; no clean is performed. The ZIP is
@@ -58,7 +58,7 @@ replaced only after both the build and packaging succeed.
 
 ```sh
 python3 tools/build_pack.py --platforms dos win16 --output build/retro.zip
-python3 tools/build_pack.py --skip-build --executables 'NETBOLT*.EXE'
+python3 tools/build_pack.py --skip-build --executables 'ARROW*.EXE'
 python3 tools/build_pack.py --skip-build --long-names --compression stored
 ```
 
@@ -76,24 +76,24 @@ python3 tools/build_pack.py --local
 
 | Utility | Platforms | Description |
 |---|---|---|
-| [NetBolt](#netbolt) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
+| [Arrow](#arrow) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
 | [Picasso](#picasso) | Windows 3.x/9x/NT, Windows 11 x64 | Windows 95-style paint program |
 | [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
 | `hello` | All Open Watcom platforms | Console example |
 | `hellowin` | Windows | GUI example with resources |
 
-## NetBolt
+## Arrow
 
-NetBolt is an independent TCP throughput tester for DOS, OS/2 2.0+, Windows
+Arrow is an independent TCP throughput tester for DOS, OS/2 2.0+, Windows
 3.x, Windows 9x, Windows NT/2000 and x64 Windows. It supports client and server
 modes, parallel streams and reverse tests using the iperf 3.x control protocol. The
-DOS build uses mTCP; Windows builds use Winsock. NetBolt is not affiliated with
+DOS build uses mTCP; Windows builds use Winsock. Arrow is not affiliated with
 or endorsed by the iperf3 project.
 
-Build all NetBolt targets as part of the default build, or select one target:
+Build all Arrow targets as part of the default build, or select one target:
 
 ```sh
-docker compose run --rm build make PROJECTS=netbolt
+docker compose run --rm build make PROJECTS=arrow
 docker compose run --rm build make dos
 docker compose run --rm build make os2
 docker compose run --rm build make win16
@@ -104,16 +104,16 @@ docker compose run --rm build make win64
 
 | Executable | Platform |
 |---|---|
-| `NETBOLTD.EXE` | MS-DOS / FreeDOS |
-| `NETBOLTO.EXE` | OS/2 2.0+ |
-| `NETBOLT16.EXE` | Windows 3.x |
-| `NETBOLT32.EXE` | Windows 95/98/ME |
-| `NETBOLTN.EXE` | Windows NT 4.0 / 2000 |
-| `NETBOLT64.EXE` | x64 Windows |
+| `ARROWD.EXE` | MS-DOS / FreeDOS |
+| `ARROWO.EXE` | OS/2 2.0+ |
+| `ARROW16.EXE` | Windows 3.x |
+| `ARROW32.EXE` | Windows 95/98/ME |
+| `ARROWN.EXE` | Windows NT 4.0 / 2000 |
+| `ARROW64.EXE` | x64 Windows |
 
 The binaries are placed in `build/<platform>/bin/`. See
-[`src/netbolt/README.md`](src/netbolt/README.md) for usage, platform details
-and protocol test helpers. NetBolt source uses the repository MIT license; the
+[`src/arrow/README.md`](src/arrow/README.md) for usage, platform details
+and protocol test helpers. Arrow source uses the repository MIT license; the
 DOS executable also links mTCP, which is licensed under GPLv3.
 
 ## Picasso
@@ -179,7 +179,7 @@ The common Open Watcom build system supports these platforms:
 | `win9x` | Windows 95/98/ME | `wcc386` | 386, ANSI API |
 | `winnt` | Windows NT 4.0 / 2000 | `wcc386` | Pentium-tuned, optional UNICODE |
 
-NetBolt and Picasso have x64 Windows targets, `win64`, built with MinGW-w64 in
+Arrow and Picasso have x64 Windows targets, `win64`, built with MinGW-w64 in
 the same build image. Standard outputs use `build/<platform>/bin/NAME.EXE`; object
 files, maps and libraries are under `build/<platform>/obj` and `.../lib`.
 
@@ -191,12 +191,12 @@ docker/test/    DOSBox-X, Wine and protocol test tools
 mk/rules.mk     common build rules for one module and platform
 mk/platform/    compiler and linker settings per platform
 lib/            shared libraries (retro platform helpers and imgio codecs)
-src/            utilities, including NetBolt and Picasso
+src/            utilities, including Arrow and Picasso
 tests/          shared smoke-test and GUI-test runners
 tools/          project scaffolding and helper scripts
 ```
 
-NetBolt and Picasso have dedicated makefiles for their MinGW-w64 x64 targets;
+Arrow and Picasso have dedicated makefiles for their MinGW-w64 x64 targets;
 the top-level Makefile includes them in `win64` builds.
 
 ### Adding a utility
@@ -243,7 +243,7 @@ docker compose run --rm test
 
 The runner checks executable formats, runs console projects with a
 `src/<name>/test.expect` file (DOSBox-X for DOS, Wine for Win9x/NT), and sources
-any `src/<name>/test.sh` project tests. NetBolt's test exercises client and
+any `src/<name>/test.sh` project tests. Arrow's test exercises client and
 server interoperability with a compatible protocol peer. Picasso and imgconv
 also test image conversion against reference files generated with ImageMagick.
 

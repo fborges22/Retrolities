@@ -1,6 +1,6 @@
-# NetBolt
+# Arrow
 
-NetBolt is an independent TCP throughput tester that speaks the iperf 3.x
+Arrow is an independent TCP throughput tester that speaks the iperf 3.x
 control protocol. It supports client and server operation, parallel TCP
 streams, and reverse mode; it does not implement UDP or bidirectional tests.
 The project is not affiliated with or endorsed by the iperf3 project.
@@ -9,27 +9,37 @@ The project is not affiliated with or endorsed by the iperf3 project.
 
 | Executable | Platform | Network stack |
 |---|---|---|
-| `NETBOLTD.EXE` | MS-DOS / FreeDOS, 8088+ | mTCP and a packet driver |
-| `NETBOLTO.EXE` | OS/2 2.0 and later | OS/2 TCP/IP sockets |
-| `NETBOLT16.EXE` | Windows 3.1 / WfW 3.11 | Winsock 1.1 |
-| `NETBOLT32.EXE` | Windows 95 / 98 / ME | Winsock 1.1 |
-| `NETBOLTN.EXE` | Windows NT 4.0 / 2000 | Winsock 2.2 |
-| `NETBOLT64.EXE` | x64 Windows | Winsock 2.2 |
+| `ARROWD.EXE` | MS-DOS / FreeDOS, 8088+ | mTCP and a packet driver |
+| `ARROWO.EXE` | OS/2 2.0 and later | OS/2 TCP/IP sockets |
+| `ARROW16.EXE` | Windows 3.1 / WfW 3.11 | Winsock 1.1 |
+| `ARROW32.EXE` | Windows 95 / 98 / ME | Winsock 1.1 |
+| `ARROWN.EXE` | Windows NT 4.0 / 2000 | Winsock 2.2 |
+| `ARROW64.EXE` | x64 Windows, including Windows 11 | Winsock 2.2 |
 
 Build all targets with `docker compose run --rm build`, or choose `dos`,
 `os2`, `win16`, `win9x`, `winnt` or `win64` as the make target. Binaries are
 written under `build/<platform>/bin/`.
 
+## Screenshots
+
+| Platform | Screenshot |
+|---|---|
+| DOS | ![Arrow running in DOS](docs/dos.png) |
+| Windows 3.x | ![Arrow running in Windows 3.x](docs/win3x.png) |
+| Windows 9x | ![Arrow running in Windows 9x](docs/win9x.png) |
+| Windows NT | ![Arrow running in Windows NT](docs/winnt.png) |
+| x64 Windows | ![Arrow running in x64 Windows](docs/win64.png) |
+
 ## Usage
 
 On DOS, load a packet driver and configure mTCP through `MTCPCFG`, then run
-`NETBOLTD` for the interactive UI. It also accepts:
+`ARROWD` for the interactive UI. It also accepts:
 
 ```text
-NETBOLTD -c 192.168.1.10
-NETBOLTD -c 192.168.1.10 -t 30 -P 2 -R
-NETBOLTD -s
-NETBOLTD -c 192.168.1.10 -b > LOG.TXT
+ARROWD -c 192.168.1.10
+ARROWD -c 192.168.1.10 -t 30 -P 2 -R
+ARROWD -s
+ARROWD -c 192.168.1.10 -b > LOG.TXT
 ```
 
 The Windows builds provide a GUI for client and server modes. Use the same
@@ -42,8 +52,8 @@ TCP/IP socket import library; the OS/2 system and TCP/IP stack must be present
 at runtime. For example:
 
 ```text
-NETBOLTO -c 192.168.1.10 -t 30 -P 2 -R
-NETBOLTO -s
+ARROWO -c 192.168.1.10 -t 30 -P 2 -R
+ARROWO -s
 ```
 
 Press Ctrl+C to stop the server. OS/2's text console is used instead of the
@@ -55,10 +65,10 @@ tests are supported from the command line.
 `common/` contains the protocol engine, `dos/` the DOS UI and mTCP backend,
 `os2/` the OS/2 console front end and TCP/IP socket backend, `win/` the
 Windows UI and Winsock backend, and `tests/` protocol regression helpers.
-`sh src/netbolt/tests/run-host.sh` tests the protocol engine against
+`sh src/arrow/tests/run-host.sh` tests the protocol engine against
 an installed iperf3 peer. The shared test container includes the required
 compiler and peer binary.
 
-The NetBolt source is covered by the repository MIT license. The DOS executable
+The Arrow source is covered by the repository MIT license. The DOS executable
 links mTCP, which retains its GPLv3 license; the build image fetches its license
 alongside the sources.

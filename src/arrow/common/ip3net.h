@@ -1,4 +1,4 @@
-/* NetBolt - minimal non-blocking TCP abstraction (mTCP / Winsock 1.1) */
+/* Arrow - minimal non-blocking TCP abstraction (mTCP / Winsock 1.1) */
 #ifndef IP3NET_H
 #define IP3NET_H
 

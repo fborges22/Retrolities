@@ -25,10 +25,10 @@ XVFB_PID=$!
 sleep 1
 mkdir -p "$HOME"
 wineboot -i >/dev/null 2>&1
-printf '[Settings]\r\nHost=127.0.0.1\r\nPort=5201\r\nTime=%s\r\nStreams=%s\r\nBlock=16384\r\nServer=%s\r\nReverse=%s\r\n' "${TIME:-6}" "${STREAMS:-1}" "${SERVER:-0}" "${REVERSE:-0}" > "$WINEPREFIX/drive_c/windows/NETBOLT.INI"
+printf '[Settings]\r\nHost=127.0.0.1\r\nPort=5201\r\nTime=%s\r\nStreams=%s\r\nBlock=16384\r\nServer=%s\r\nReverse=%s\r\n' "${TIME:-6}" "${STREAMS:-1}" "${SERVER:-0}" "${REVERSE:-0}" > "$WINEPREFIX/drive_c/windows/ARROW.INI"
 # the NT build keeps the same settings in the registry instead
-printf 'REGEDIT4\r\n\r\n[HKEY_CURRENT_USER\\Software\\NetBolt\\Settings]\r\n"Host"="127.0.0.1"\r\n"Port"="5201"\r\n"Time"="%s"\r\n"Streams"="%s"\r\n"Block"="16384"\r\n"Server"="%s"\r\n"Reverse"="%s"\r\n' "${TIME:-6}" "${STREAMS:-1}" "${SERVER:-0}" "${REVERSE:-0}" > /tmp/netbolt.reg
-wine regedit /S /tmp/netbolt.reg >/dev/null 2>&1
+printf 'REGEDIT4\r\n\r\n[HKEY_CURRENT_USER\\Software\\Arrow\\Settings]\r\n"Host"="127.0.0.1"\r\n"Port"="5201"\r\n"Time"="%s"\r\n"Streams"="%s"\r\n"Block"="16384"\r\n"Server"="%s"\r\n"Reverse"="%s"\r\n' "${TIME:-6}" "${STREAMS:-1}" "${SERVER:-0}" "${REVERSE:-0}" > /tmp/arrow.reg
+wine regedit /S /tmp/arrow.reg >/dev/null 2>&1
 if [ "${SERVER:-0}" = 0 ]; then
     iperf3 -s -1 > /tmp/srv.log 2>&1 &
     SERVER_PID=$!
@@ -37,9 +37,9 @@ sleep 0.5
 wine "$EXE" >/tmp/wine.log 2>&1 &
 GUI_PID=$!
 sleep ${BOOT:-6}
-W=$(xdotool search --name "NetBolt" | head -1)
+W=$(xdotool search --name "Arrow" | head -1)
 echo "window: $W"
-[ -n "$W" ] || { echo "NetBolt window was not found" >&2; exit 1; }
+[ -n "$W" ] || { echo "Arrow window was not found" >&2; exit 1; }
 xdotool windowactivate --sync $W 2>/dev/null; xdotool windowfocus $W 2>/dev/null
 xdotool key --window $W Return
 if [ "${SERVER:-0}" = 1 ]; then
@@ -55,5 +55,5 @@ sleep ${SHOT_AT:-4}
 capture "${OUT%.png}-running.png"
 sleep $(( ${TIME:-6} + 2 - ${SHOT_AT:-4} ))
 capture "$OUT"
-tail -6 /tmp/srv.log
+cat /tmp/srv.log
 tail -3 /tmp/wine.log

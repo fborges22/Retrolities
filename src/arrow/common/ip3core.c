@@ -1,5 +1,5 @@
 /*
- * NetBolt - portable iperf3 protocol engine (TCP, client + server)
+ * Arrow - portable iperf3 protocol engine (TCP, client + server)
  *
  * Wire protocol (iperf 3.x):
  *   control connection: 37 byte cookie, then single state bytes and

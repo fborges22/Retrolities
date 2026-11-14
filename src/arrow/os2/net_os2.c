@@ -1,4 +1,4 @@
-/* NetBolt - ip3net.h backend for the OS/2 TCP/IP socket API. */
+/* Arrow - ip3net.h backend for the OS/2 TCP/IP socket API. */
 #include <string.h>
 #include <stdio.h>
 

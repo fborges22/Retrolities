@@ -1,4 +1,4 @@
-/* NetBolt - ip3net.h backend for Winsock 1.1 (Win16, Win32) and,
+/* Arrow - ip3net.h backend for Winsock 1.1 (Win16, Win32) and,
    with IP3_WINNT, Winsock 2.2 (Windows NT 4.0 / 2000 / x64 Windows) */
 #ifdef IP3_WINNT
 #include <winsock2.h>

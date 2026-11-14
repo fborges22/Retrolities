@@ -1,5 +1,5 @@
 /*
- * NetBolt - Windows GUI front end
+ * Arrow - Windows GUI front end
  *
  * One source for Windows 3.x (Win16), Windows 9x (Win32) and Windows
  * NT 4.0/2000 (Win32) and x64 Windows (both built with IP3_WINNT).
@@ -20,7 +20,7 @@
 #if defined(__NT__) || defined(_WIN32)
 #define EXPORT
 #define CMD_ID(w, l)   LOWORD(w)
-#define APP_TITLE      "NetBolt"
+#define APP_TITLE      "Arrow"
 #ifdef IP3_WINNT
 #ifdef _WIN64
 #define APP_FLAVOUR    "for x64 Windows"
@@ -34,7 +34,7 @@
 #else
 #define EXPORT         __export
 #define CMD_ID(w, l)   (w)
-#define APP_TITLE      "NetBolt"
+#define APP_TITLE      "Arrow"
 #define APP_FLAVOUR    "for Windows 3.x"
 #endif
 #ifndef NET_NAME
@@ -70,9 +70,9 @@ static HBITMAP   hbmBack;
 static HBRUSH    hbrFace;
 static HFONT     hfUI, hfBold, hfTitle, hfBig, hfMono, hfSmall;
 #ifdef IP3_WINNT
-static char      szKey[] = "Software\\NetBolt\\Settings";
+static char      szKey[] = "Software\\Arrow\\Settings";
 #else
-static char      szIni[] = "NETBOLT.INI";
+static char      szIni[] = "ARROW.INI";
 static char      szSec[] = "Settings";
 #endif
 
@@ -785,7 +785,7 @@ LRESULT CALLBACK EXPORT WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int PASCAL WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
-    static char cls[] = "NetBoltMain";
+    static char cls[] = "ArrowMain";
     WNDCLASS wc;
     MSG msg;
     RECT r;
@@ -832,7 +832,7 @@ int PASCAL WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         DestroyWindow(hMain);
         return 1;
     }
-    ui_log("Welcome to NetBolt. Enter a server and press Start, or switch to Server mode.");
+    ui_log("Welcome to Arrow. Enter a server and press Start, or switch to Server mode.");
 
     while (!quit) {
         if (ip3_active()) {

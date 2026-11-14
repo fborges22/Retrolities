@@ -1,4 +1,4 @@
-/* NetBolt for OS/2 2.0 - command-line console front end. */
+/* Arrow for OS/2 2.0 - command-line console front end. */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,10 +43,10 @@ void ui_summary(const ip3_summary *s)
 
 static void usage(void)
 {
-    puts("NetBolt for OS/2 2.0+ v" IP3_VERSION " - TCP throughput test\n"
+    puts("Arrow for OS/2 2.0+ v" IP3_VERSION " - TCP throughput test\n"
          "\n"
-         "Usage: NETBOLTO -c <host> [options]\n"
-         "       NETBOLTO -s [options]\n"
+         "Usage: ARROWO -c <host> [options]\n"
+         "       ARROWO -s [options]\n"
          "  -c <host>   run as client and connect to <host>\n"
          "  -s          run as server\n"
          "  -p <port>   port (default 5201)\n"
@@ -101,7 +101,7 @@ int main(int argc, char **argv)
         return 1;
     }
     if (net_init(err, sizeof(err)) != 0) {
-        fprintf(stderr, "NETBOLTO: %s\n", err);
+        fprintf(stderr, "ARROWO: %s\n", err);
         return 2;
     }
 

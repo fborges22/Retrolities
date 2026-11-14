@@ -5,7 +5,7 @@
 T=$1; SHOT=$2; shift 2
 cd "$(dirname "$0")/../../.."
 D=/tmp/dosc; rm -rf $D; mkdir -p $D
-cp build/dos/bin/NETBOLTD.EXE /opt/dos/NE2000.COM $D/
+cp build/dos/bin/ARROWD.EXE /opt/dos/NE2000.COM $D/
 printf 'PACKETINT 0x60\r\nIPADDR 10.0.2.15\r\nNETMASK 255.255.255.0\r\nGATEWAY 10.0.2.2\r\nNAMESERVER 10.0.2.3\r\nMTU 1500\r\n' > $D/MTCP.CFG
 cat > /tmp/dbx.conf <<EOC
 [sdl]
@@ -33,10 +33,19 @@ set MTCPCFG=MTCP.CFG
 EOC
 for l in "$@"; do echo "$l" >> /tmp/dbx.conf; done
 echo exit >> /tmp/dbx.conf
-export DISPLAY=:99 SDL_AUDIODRIVER=dummy
-pgrep Xvfb >/dev/null || { Xvfb :99 -screen 0 800x600x24 >/dev/null 2>&1 & sleep 1; }
+export DISPLAY=:99 SDL_VIDEODRIVER=x11 SDL_AUDIODRIVER=dummy
+XVFB_PID=
+DOSBOX_PID=
+cleanup() {
+    if [ -n "$DOSBOX_PID" ]; then kill "$DOSBOX_PID" 2>/dev/null || true; fi
+    if [ -n "$XVFB_PID" ]; then kill "$XVFB_PID" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+Xvfb :99 -screen 0 800x600x24 >/dev/null 2>&1 &
+XVFB_PID=$!
+sleep 1
 timeout $T dosbox-x -conf /tmp/dbx.conf -fastlaunch -nomenu >/tmp/dbx.log 2>&1 &
-PID=$!
+DOSBOX_PID=$!
 if [ "$SHOT" != "-" ]; then
     sleep $(( T - 3 ))
     import -window root -bordercolor black -border 1 -trim +repage "$SHOT"
@@ -45,6 +54,7 @@ if [ "$SHOT" != "-" ]; then
         rm -f "${SHOT%.png}-1.png"
     fi
 fi
-wait $PID
+wait "$DOSBOX_PID"
+DOSBOX_PID=
 cat $D/OUT*.TXT 2>/dev/null
 exit 0

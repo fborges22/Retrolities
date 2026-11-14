@@ -1,5 +1,5 @@
 /*
- * NetBolt for DOS - text mode user interface
+ * Arrow for DOS - text mode user interface
  *
  * 80x25 colour (or monochrome) text mode, direct video memory access.
  * Networking: mTCP + packet driver (see net_dos.cpp).
@@ -180,7 +180,7 @@ static void draw_static(void)
     box(0, 18, 80, 6, "Report");
     fill(0, 24, 80, 1, ' ', A_BAR);
     for (i = 0, x = 1; keys[i]; i++) x = ps(x, 24, keys[i], (unsigned char)((i & 1) ? A_BAR : A_BARKEY));
-    ps(80 - 21, 24, "NetBolt \xb3 TCP \xb3 mTCP", A_BAR);
+    ps(80 - 21, 24, "Arrow \xb3 TCP \xb3 mTCP", A_BAR);
 }
 
 static void draw_top(void)
@@ -192,7 +192,7 @@ static void draw_top(void)
     int x;
     fill(0, 0, 80, 1, ' ', A_BAR);
     x = ps(1, 0, "\xf0 ", A_BARKEY);
-    x = ps(x, 0, "NetBolt", A_BARKEY);
+    x = ps(x, 0, "Arrow", A_BARKEY);
     ps(x, 0, " for DOS  v" IP3_VERSION, A_BAR);
     sprintf(b, " %s ", names[st_code]);
     x = 79 - (int)strlen(b);
@@ -492,9 +492,9 @@ static int handle_key(unsigned k)
 
 static void usage(void)
 {
-    puts("NetBolt for DOS v" IP3_VERSION " - network throughput test\n"
+    puts("Arrow for DOS v" IP3_VERSION " - network throughput test\n"
          "\n"
-         "Usage: NETBOLTD [options]            (no options: interactive screen)\n"
+         "Usage: ARROWD [options]            (no options: interactive screen)\n"
          "  -c <host>   run as client and connect to <host>\n"
          "  -s          run as server\n"
          "  -p <port>   port (default 5201)\n"
@@ -532,7 +532,7 @@ int main(int argc, char **argv)
     if (batch && !autostart) { usage(); return 1; }
 
     if (net_init(err, sizeof(err)) != 0) {
-        printf("\nNETBOLTD: %s\n", err);
+        printf("\nARROWD: %s\n", err);
         return 2;
     }
 
@@ -554,7 +554,7 @@ int main(int argc, char **argv)
 
     video_init();
     draw_static();
-    ui_log("Welcome to NetBolt. Fill in the setup panel and press F2 to start.");
+    ui_log("Welcome to Arrow. Fill in the setup panel and press F2 to start.");
     redraw();
     if (autostart) start_test();
 

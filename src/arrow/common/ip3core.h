@@ -1,5 +1,5 @@
 /*
- * NetBolt - portable iperf3 protocol engine (TCP, client + server)
+ * Arrow - portable iperf3 protocol engine (TCP, client + server)
  *
  * The engine is a non-blocking state machine: the front end calls
  * ip3_step() from its main loop and receives progress through the ui_*

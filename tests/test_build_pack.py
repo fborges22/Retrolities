@@ -26,18 +26,18 @@ class BuildPackTests(unittest.TestCase):
         self.output = self.root / "build" / "retrolities.zip"
         self.artifacts = {
             "build/dos/bin/HELLO.EXE": b"DOS binary",
-            "build/os2/bin/NETBOLTO.EXE": b"OS/2 NetBolt",
+            "build/os2/bin/ARROWO.EXE": b"OS/2 Arrow",
             "build/win16/bin/HELLO.EXE": b"Win16 binary",
-            "build/win64/bin/NETBOLT64.EXE": b"x64 binary",
+            "build/win64/bin/ARROW64.EXE": b"x64 binary",
             "build/win16/lib/l/retro.lib": b"library",
             "build/win9x/obj/hello/hello.obj": b"object",
-            "build/winnt/obj/netbolt/netbolt.map": b"map",
+            "build/winnt/obj/arrow/arrow.map": b"map",
         }
         self.expected = {
             "HELLOD.EXE": b"DOS binary",
-            "NETBOLTO.EXE": b"OS/2 NetBolt",
+            "ARROWO.EXE": b"OS/2 Arrow",
             "HELLO16.EXE": b"Win16 binary",
-            "NETBOL64.EXE": b"x64 binary",
+            "ARROW64.EXE": b"x64 binary",
         }
 
     def create_artifacts(self, *args, **kwargs):
@@ -92,7 +92,7 @@ class BuildPackTests(unittest.TestCase):
             )
         self.assertEqual(run.call_args.args[0], ["make", "dos", "win64", "V=1"])
         with zipfile.ZipFile(self.output) as archive:
-            self.assertEqual(set(archive.namelist()), {"HELLO.EXE", "NETBOL64.EXE"})
+            self.assertEqual(set(archive.namelist()), {"HELLO.EXE", "ARROW64.EXE"})
 
     def test_os2_is_a_selectable_packaging_target(self):
         with patch.object(
@@ -101,17 +101,17 @@ class BuildPackTests(unittest.TestCase):
             self.assertEqual(self.run_main("--local", "--platforms", "os2"), 0)
         self.assertEqual(run.call_args.args[0], ["make", "os2"])
         with zipfile.ZipFile(self.output) as archive:
-            self.assertEqual(archive.namelist(), ["NETBOLTO.EXE"])
+            self.assertEqual(archive.namelist(), ["ARROWO.EXE"])
 
     def test_skip_build_and_case_insensitive_executable_filters(self):
         self.create_artifacts()
         with patch.object(build_pack.subprocess, "run") as run:
             self.assertEqual(
-                self.run_main("--skip-build", "--executables", "netbolt*.exe"), 0
+                self.run_main("--skip-build", "--executables", "arrow*.exe"), 0
             )
         run.assert_not_called()
         with zipfile.ZipFile(self.output) as archive:
-            self.assertEqual(set(archive.namelist()), {"NETBOLTO.EXE", "NETBOL64.EXE"})
+            self.assertEqual(set(archive.namelist()), {"ARROWO.EXE", "ARROW64.EXE"})
 
     def test_long_names_and_stored_compression(self):
         self.create_artifacts()
@@ -120,7 +120,7 @@ class BuildPackTests(unittest.TestCase):
         )
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(set(archive.namelist()), {
-                "HELLO-dos.EXE", "HELLO-win16.EXE", "NETBOLTO.EXE", "NETBOLT64.EXE",
+                "HELLO-dos.EXE", "HELLO-win16.EXE", "ARROWO.EXE", "ARROW64.EXE",
             })
             self.assertTrue(
                 all(info.compress_type == zipfile.ZIP_STORED for info in archive.infolist())
@@ -129,8 +129,8 @@ class BuildPackTests(unittest.TestCase):
     def test_short_names_handle_truncation_and_reserved_case_insensitive_names(self):
         self.artifacts.update({
             "build/dos/bin/hello16.exe": b"reserved",
-            "build/win16/bin/NETBOLT16.EXE": b"Win16 NetBolt",
-            "build/win9x/bin/NETBOLT32.EXE": b"Win9x NetBolt",
+            "build/win16/bin/ARROW16.EXE": b"Win16 Arrow",
+            "build/win9x/bin/ARROW32.EXE": b"Win9x Arrow",
             "build/win16/bin/PICASSO.EXE": b"Win16 paint",
             "build/winnt/bin/PICASSO.EXE": b"NT paint",
             "build/dos/bin/SMALL.com": b"COM binary",
@@ -148,9 +148,9 @@ class BuildPackTests(unittest.TestCase):
             self.assertEqual(archive.read("HELLO161.EXE"), b"Win16 binary")
             self.assertEqual(archive.read("PICASS16.EXE"), b"Win16 paint")
             self.assertEqual(archive.read("PICASSNT.EXE"), b"NT paint")
-            self.assertEqual(archive.read("NETBOL16.EXE"), b"Win16 NetBolt")
-            self.assertEqual(archive.read("NETBOL32.EXE"), b"Win9x NetBolt")
-            self.assertEqual(archive.read("NETBOL64.EXE"), b"x64 binary")
+            self.assertEqual(archive.read("ARROW16.EXE"), b"Win16 Arrow")
+            self.assertEqual(archive.read("ARROW32.EXE"), b"Win9x Arrow")
+            self.assertEqual(archive.read("ARROW64.EXE"), b"x64 binary")
             self.assertEqual(archive.read("SMALL.com"), b"COM binary")
 
     def test_filter_without_matches_preserves_existing_zip(self):
