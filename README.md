@@ -87,7 +87,8 @@ python3 tools/build_pack.py --local
 Arrow is an independent TCP throughput tester for DOS, OS/2 2.0+, Windows
 3.x, Windows 9x, Windows NT/2000 and x64 Windows. It supports client and server
 modes, parallel streams and reverse tests using the iperf 3.x control protocol. The
-DOS build uses mTCP; Windows builds use Winsock. Arrow is not affiliated with
+default DOS build uses mTCP; an opt-in `ARROWM.EXE` build uses MSCLIENT 3.0's
+resident TCP/IP sockets. Windows builds use Winsock. Arrow is not affiliated with
 or endorsed by the iperf3 project.
 
 Build all Arrow targets as part of the default build, or select one target:
@@ -105,6 +106,7 @@ docker compose run --rm build make win64
 | Executable | Platform |
 |---|---|
 | `ARROWD.EXE` | MS-DOS / FreeDOS |
+| `ARROWM.EXE` | MS-DOS / MSCLIENT 3.0 TCP/IP (opt-in SDK build) |
 | `ARROWO.EXE` | OS/2 2.0+ |
 | `ARROW16.EXE` | Windows 3.x |
 | `ARROW32.EXE` | Windows 95/98/ME |
@@ -114,7 +116,9 @@ docker compose run --rm build make win64
 The binaries are placed in `build/<platform>/bin/`. See
 [`src/arrow/README.md`](src/arrow/README.md) for usage, platform details
 and protocol test helpers. Arrow source uses the repository MIT license; the
-DOS executable also links mTCP, which is licensed under GPLv3.
+`ARROWD.EXE` also links mTCP, which is licensed under GPLv3. Build `ARROWM.EXE`
+with `make msclient MSSDK=<SDK root>`; see Arrow's README for container builds,
+resident sockets setup and the separate SDK licensing requirements.
 
 ## Picasso
 

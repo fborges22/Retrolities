@@ -2,7 +2,7 @@
  * Arrow for DOS - text mode user interface
  *
  * 80x25 colour (or monochrome) text mode, direct video memory access.
- * Networking: mTCP + packet driver (see net_dos.cpp).
+ * Networking: mTCP + packet driver, or the resident MSCLIENT TCP/IP stack.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +15,16 @@
 #include "ip3net.h"
 
 extern volatile unsigned char net_break;
+
+#ifdef IP3_MSCLIENT
+#define DOS_PROGRAM "ARROWM"
+#define DOS_STACK   "MSCLIENT"
+#define DOS_REQUIRE "Requires running MSCLIENT TCP/IP with TCPTSR and SOCKETS (see README)."
+#else
+#define DOS_PROGRAM "ARROWD"
+#define DOS_STACK   "mTCP"
+#define DOS_REQUIRE "Requires a packet driver and an mTCP configuration (SET MTCPCFG=...)."
+#endif
 
 /* ---- colours ---------------------------------------------------- */
 #define A_BAR      0x70
@@ -180,7 +190,10 @@ static void draw_static(void)
     box(0, 18, 80, 6, "Report");
     fill(0, 24, 80, 1, ' ', A_BAR);
     for (i = 0, x = 1; keys[i]; i++) x = ps(x, 24, keys[i], (unsigned char)((i & 1) ? A_BAR : A_BARKEY));
-    ps(80 - 21, 24, "Arrow \xb3 TCP \xb3 mTCP", A_BAR);
+    {
+        const char *brand = "Arrow \xb3 TCP \xb3 " DOS_STACK;
+        ps(79 - (int)strlen(brand), 24, brand, A_BAR);
+    }
 }
 
 static void draw_top(void)
@@ -494,7 +507,7 @@ static void usage(void)
 {
     puts("Arrow for DOS v" IP3_VERSION " - network throughput test\n"
          "\n"
-         "Usage: ARROWD [options]            (no options: interactive screen)\n"
+         "Usage: " DOS_PROGRAM " [options]            (no options: interactive screen)\n"
          "  -c <host>   run as client and connect to <host>\n"
          "  -s          run as server\n"
          "  -p <port>   port (default 5201)\n"
@@ -504,7 +517,7 @@ static void usage(void)
          "  -R          reverse: the server sends, this machine receives\n"
          "  -b          batch mode: plain text output, no full screen UI\n"
          "\n"
-         "Requires a packet driver and an mTCP configuration (SET MTCPCFG=...).");
+         DOS_REQUIRE);
 }
 
 int main(int argc, char **argv)
@@ -532,7 +545,7 @@ int main(int argc, char **argv)
     if (batch && !autostart) { usage(); return 1; }
 
     if (net_init(err, sizeof(err)) != 0) {
-        printf("\nARROWD: %s\n", err);
+        printf("\n" DOS_PROGRAM ": %s\n", err);
         return 2;
     }
 

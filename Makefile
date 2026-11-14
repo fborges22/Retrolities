@@ -11,7 +11,7 @@ PLATFORMS := dos win16 win9x winnt
 PROJECTS  ?= $(sort arrow $(patsubst src/%/project.mk,%,$(wildcard src/*/project.mk)))
 TYPE      ?= console
 
-.PHONY: all $(PLATFORMS) os2 win64 arrow-os2 arrow-win64 picasso-win64 clean list help new test
+.PHONY: all $(PLATFORMS) msclient os2 win64 arrow-os2 arrow-win64 picasso-win64 clean list help new test
 all: $(PLATFORMS) $(if $(filter arrow,$(PROJECTS)),arrow-os2 arrow-win64) \
 	$(if $(filter picasso,$(PROJECTS)),picasso-win64)
 
@@ -38,6 +38,9 @@ os2:
 
 arrow-os2: os2
 
+msclient:
+	@$(MAKE) --no-print-directory -C src/arrow msclient
+
 clean:
 	rm -rf build
 
@@ -55,6 +58,7 @@ help:
 	@echo "make [all]                 build all projects for all platforms (including x64 Windows)"
 	@echo "make <platform>            build for one of: $(PLATFORMS)"
 	@echo "make os2                   build Arrow for OS/2 2.0+"
+	@echo "make msclient MSSDK=<path>  build Arrow for resident MSCLIENT TCP/IP"
 	@echo "make win64                 build Arrow and Picasso for x64 Windows"
 	@echo "make PROJECTS='a b' ...    restrict the build to some projects"
 	@echo "make new NAME=x [TYPE=gui] scaffold src/x (TYPE: console | gui)"

@@ -2,6 +2,7 @@
 #
 #   make            all six targets
 #   make dos        ../../build/dos/bin/ARROWD.EXE
+#   make msclient   ../../build/dos/bin/ARROWM.EXE (requires MSSDK)
 #   make os2        ../../build/os2/bin/ARROWO.EXE
 #   make win16      ../../build/win16/bin/ARROW16.EXE
 #   make win32      ../../build/win9x/bin/ARROW32.EXE
@@ -9,6 +10,8 @@
 #   make win64      ../../build/win64/bin/ARROW64.EXE
 
 MTCP   ?= /opt/mtcp
+MSSDK  ?= /opt/mstcpsdk
+MSSDK_LIB ?= $(MSSDK)/lib/dos_sock.lib
 ROOT   := ../..
 B      := $(ROOT)/build
 COMMON := common
@@ -19,6 +22,8 @@ W64_RC ?= $(MINGW_PREFIX)windres
 
 all: dos os2 win16 win32 winnt win64
 dos:   $(B)/dos/bin/ARROWD.EXE
+msclient: check-mssdk
+	$(MAKE) --no-print-directory $(B)/dos/bin/ARROWM.EXE
 os2:   $(B)/os2/bin/ARROWO.EXE
 win16: $(B)/win16/bin/ARROW16.EXE
 win32: $(B)/win9x/bin/ARROW32.EXE
@@ -49,6 +54,29 @@ $(DOS_O)/ipasm.obj: $(MTCP)/tcplib/ipasm.asm | $(DOS_O)
 $(B)/dos/bin/ARROWD.EXE: $(DOS_OBJS) | $(B)/dos/bin
 	wlink option quiet system dos option map=$(DOS_O)/arrow.map option eliminate \
 	      option stack=8192 name $@ $(DOS_OBJS:%=file %)
+
+# ---------------------------------------------- DOS / MSCLIENT (opt-in)
+MS_O    := $(B)/dos/obj/arrow-msclient
+MS_CF   := $(DOS_CF) -DIP3_MSCLIENT -Dfar=__far -Dcdecl=__cdecl -i=$(MSSDK)/include
+MS_OBJS := $(MS_O)/main.obj $(MS_O)/ip3core.obj $(MS_O)/net_msclient.obj
+MS_HDRS := $(wildcard $(MSSDK)/include/*.h $(MSSDK)/include/sys/*.h \
+                     $(MSSDK)/include/netinet/*.h)
+
+check-mssdk:
+	@test -f "$(MSSDK)/include/sys/socket.h" -a -f "$(MSSDK_LIB)" || { \
+	  echo "MSCLIENT build requires the Microsoft TCP/IP Sockets SDK."; \
+	  echo "Set MSSDK=<SDK root> (lower-case include/lib paths); see README."; exit 1; }
+
+$(MS_O)/main.obj: dos/main.c $(COMMON)/ip3core.h $(COMMON)/ip3net.h | check-mssdk $(MS_O)
+	wcc $(MS_CF) -fo=$@ $<
+$(MS_O)/ip3core.obj: $(COMMON)/ip3core.c $(COMMON)/ip3core.h $(COMMON)/ip3net.h | check-mssdk $(MS_O)
+	wcc $(MS_CF) -fo=$@ $<
+$(MS_O)/net_msclient.obj: dos/net_msclient.c $(COMMON)/ip3core.h $(COMMON)/ip3net.h \
+                        $(MS_HDRS) | check-mssdk $(MS_O)
+	wcc $(MS_CF) -fo=$@ $<
+$(B)/dos/bin/ARROWM.EXE: $(MS_OBJS) $(MSSDK_LIB) | check-mssdk $(B)/dos/bin
+	wlink option quiet system dos option map=$(MS_O)/arrow.map option eliminate \
+	      option stack=8192 name $@ $(MS_OBJS:%=file %) library $(MSSDK_LIB)
 
 # ------------------------------------------------------------------ OS/2 2.0
 OS2_O    := $(B)/os2/obj/arrow
@@ -134,14 +162,16 @@ $(B)/win64/bin/ARROW64.EXE: $(W64_OBJS) $(W64_O)/arrow.o | $(B)/win64/bin
 	$(W64_CC) -mwindows -static -Wl,-Map,$(W64_O)/arrow.map -o $@ $^ \
 	      -lws2_32 -lgdi32 -ladvapi32 -lm
 
-$(DOS_O) $(OS2_O) $(W16_O) $(W32_O) $(NT_O) $(W64_O) $(B)/dos/bin $(B)/os2/bin $(B)/win16/bin $(B)/win9x/bin $(B)/winnt/bin $(B)/win64/bin:
+$(DOS_O) $(MS_O) $(OS2_O) $(W16_O) $(W32_O) $(NT_O) $(W64_O) $(B)/dos/bin $(B)/os2/bin $(B)/win16/bin $(B)/win9x/bin $(B)/winnt/bin $(B)/win64/bin:
 	mkdir -p $@
 
 clean:
+	rm -rf $(MS_O)
+	rm -f $(B)/dos/bin/ARROWM.EXE
 	rm -rf $(B)/dos/obj/arrow $(B)/os2/obj/arrow $(B)/win16/obj/arrow $(B)/win9x/obj/arrow \
 	       $(B)/winnt/obj/arrow $(B)/win64/obj/arrow
 	rm -f $(B)/dos/bin/ARROWD.EXE $(B)/os2/bin/ARROWO.EXE $(B)/win16/bin/ARROW16.EXE \
 	      $(B)/win9x/bin/ARROW32.EXE $(B)/winnt/bin/ARROWN.EXE \
 	      $(B)/win64/bin/ARROW64.EXE
 
-.PHONY: all dos os2 win16 win32 winnt win64 clean
+.PHONY: all dos msclient check-mssdk os2 win16 win32 winnt win64 clean
