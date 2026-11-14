@@ -66,7 +66,7 @@ static const struct { int cmd, glyph; } tbBtns[] = {
     { IDM_ZOOMOUT, 9 }, { IDM_ZOOMIN, 10 }, { IDM_GRID, 11 }, { 0, 0 },
     { IDM_ABOUT, 12 }
 };
-#define NTB (sizeof(tbBtns) / sizeof(tbBtns[0]))
+#define NTB ((int)(sizeof(tbBtns) / sizeof(tbBtns[0])))
 
 static const int zoomLevels[5] = { 1, 2, 4, 6, 8 };
 static const int zoomOpts[4] = { 1, 2, 6, 8 };
@@ -886,7 +886,7 @@ static void OnTipTimer(void)
 
 /* Gives dialogs the gray Windows 95 look; TRUE if the message was handled
  * (*res is then the dialog procedure's return value). */
-static BOOL DlgLook(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam, BOOL *res)
+static BOOL DlgLook(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam, PICASSO_DLGRESULT *res)
 {
     static HBRUSH br;
     static COLORREF brColor;
@@ -909,14 +909,18 @@ static BOOL DlgLook(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam, BOOL *res
     (void)lParam;
     SetBkColor((HDC)wParam, cFace);
     SetTextColor((HDC)wParam, cText);
-    *res = (BOOL)(UINT)(DWORD)br;
+#ifdef RETRO_WIN64
+    *res = (PICASSO_DLGRESULT)(UINT_PTR)br;
+#else
+    *res = (BOOL)(UINT)br;
+#endif
     return TRUE;
 }
 
-BOOL CALLBACK __export AboutProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+PICASSO_DLGRESULT CALLBACK __export AboutProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     char buf[48];
-    BOOL res;
+    PICASSO_DLGRESULT res;
 
     if (DlgLook(hDlg, msg, wParam, lParam, &res))
         return res;
@@ -950,9 +954,10 @@ BOOL CALLBACK __export AboutProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
     return FALSE;
 }
 
-BOOL CALLBACK __export AttrProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+PICASSO_DLGRESULT CALLBACK __export AttrProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
-    BOOL res, ok1, ok2;
+    PICASSO_DLGRESULT res;
+    BOOL ok1, ok2;
     UINT w, h;
 
     if (DlgLook(hDlg, msg, wParam, lParam, &res))
@@ -992,10 +997,14 @@ BOOL CALLBACK __export AttrProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
 
 static void RunDialog(int id, DLGPROC proc)
 {
+#ifdef RETRO_WIN64
+    DialogBox(hInst, MAKEINTRESOURCE(id), hFrame, proc);
+#else
     FARPROC thunk = MakeProcInstance((FARPROC)proc, hInst);
 
     DialogBox(hInst, MAKEINTRESOURCE(id), hFrame, (DLGPROC)thunk);
     FreeProcInstance(thunk);
+#endif
 }
 
 /* ---- files ----------------------------------------------------------------- */
@@ -1317,7 +1326,7 @@ static void OnInitMenu(HMENU menu)
                                 IDM_CLEARSEL, IDM_ZOOMIN, IDM_ZOOMOUT };
     int i;
 
-    for (i = 0; i < sizeof(gray) / sizeof(gray[0]); i++)
+    for (i = 0; i < (int)(sizeof(gray) / sizeof(gray[0])); i++)
         EnableMenuItem(menu, gray[i], MF_BYCOMMAND | (IsEnabled(gray[i]) ? MF_ENABLED : MF_GRAYED));
 #define CHECK(id, on) CheckMenuItem(menu, id, MF_BYCOMMAND | ((on) ? MF_CHECKED : MF_UNCHECKED))
     CHECK(IDM_VTOOLBAR, showToolbar);

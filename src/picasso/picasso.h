@@ -11,6 +11,12 @@
 #include "imgio.h"
 #include "resource.h"
 
+#ifdef RETRO_WIN64
+typedef INT_PTR PICASSO_DLGRESULT;
+#else
+typedef BOOL PICASSO_DLGRESULT;
+#endif
+
 #define MAXDIM      IMG_MAXDIM  /* largest picture width / height */
 #define MAXUNDO     3
 

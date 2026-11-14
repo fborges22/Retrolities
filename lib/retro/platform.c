@@ -14,6 +14,8 @@ const char *retro_target(void)
     return "MS-DOS";
 #elif defined(RETRO_WIN16)
     return "Windows 3.x";
+#elif defined(RETRO_WIN64)
+    return "Windows x64";
 #elif defined(RETRO_WIN9X)
     return "Windows 9x";
 #else

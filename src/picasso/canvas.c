@@ -1189,9 +1189,9 @@ LRESULT CALLBACK __export CanvasProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             if (textLen > 0)
                 textLen--;
         } else if (wParam == 13) {
-            if (textLen < sizeof(textBuf) - 1)
+            if (textLen < (int)sizeof(textBuf) - 1)
                 textBuf[textLen++] = '\n';
-        } else if (wParam >= 32 && textLen < sizeof(textBuf) - 1) {
+        } else if (wParam >= 32 && textLen < (int)sizeof(textBuf) - 1) {
             textBuf[textLen++] = (char)wParam;
         } else {
             return 0;

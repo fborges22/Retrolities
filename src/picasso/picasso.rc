@@ -191,6 +191,8 @@ BEGIN
     LTEXT   "Picasso", -1, 40, 8, 160, 8
 #ifdef RETRO_WIN16
     LTEXT   "Version 1.0 for Windows 3.x", -1, 40, 19, 160, 8
+#elif defined(RETRO_WIN64)
+    LTEXT   "Version 1.0 for Windows x64", -1, 40, 19, 160, 8
 #elif defined(RETRO_WINNT)
     LTEXT   "Version 1.0 for Windows NT/2000", -1, 40, 19, 160, 8
 #else

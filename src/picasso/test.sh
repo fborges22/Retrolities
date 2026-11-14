@@ -1,6 +1,6 @@
 # Picasso file format tests (sourced by tests/run.sh): PICASSO.EXE /convert
-# loads a picture into its display bitmap and saves it again, all in the real
-# Win16 and Win32 programs under Wine (on a headless X server).  Results are
+# loads a picture into its display bitmap and saves it again in the Win16,
+# Win32 and x64 programs under Wine (on a headless X server). Results are
 # compared with ImageMagick's reading of the reference pictures.
 
 # source : output : minimum PSNR (0 = identical)
@@ -12,12 +12,15 @@ png24.png:q19.png:0 png8.png:q20.png:0 png24.png:q21.tif:0 png8.png:q22.tif:0 pn
 jpg.jpg:q24.png:40 tiflzw.tif:q25.png:0 bmp4.bmp:q26.png:0"
 
 if command -v Xvfb >/dev/null; then
-    for pc_plat in win16 win9x winnt; do
-        [ -f build/$pc_plat/bin/PICASSO.EXE ] || continue
+    for pc_plat in win16 win9x winnt win64; do
+        pc_exe=PICASSO.EXE
+        [ "$pc_plat" != win64 ] || pc_exe=PICASSO64.EXE
+        [ -f build/$pc_plat/bin/$pc_exe ] || continue
         mkdir -p "$tmp/ic"
         [ -d "$tmp/ic/img" ] || tests/images/make.sh "$tmp/ic/img" >/dev/null 2>&1
         work=$tmp/pc
-        rm -rf "$work" && mkdir -p "$work" && cp build/$pc_plat/bin/PICASSO.EXE "$tmp"/ic/img/* "$work/"
+        rm -rf "$work" && mkdir -p "$work" && cp "build/$pc_plat/bin/$pc_exe" "$work/PICASSO.EXE" \
+            && cp "$tmp"/ic/img/* "$work/"
         Xvfb :97 -screen 0 800x600x24 >/dev/null 2>&1 &
         pc_x=$!
         sleep 1
@@ -25,10 +28,19 @@ if command -v Xvfb >/dev/null; then
             IFS=: read -r src out min <<EOT
 $item
 EOT
-            (cd "$work" && DISPLAY=:97 timeout 120 wine PICASSO.EXE /convert "$src" "$out" >/dev/null 2>&1)
+            if [ "$pc_plat" = win64 ]; then
+                (cd "$work" && DISPLAY=:97 timeout 120 env WINEPREFIX="$tmp/wine64" WINEARCH=win64 \
+                    wine PICASSO.EXE /convert "$src" "$out" >/dev/null 2>&1)
+            else
+                (cd "$work" && DISPLAY=:97 timeout 120 wine PICASSO.EXE /convert "$src" "$out" >/dev/null 2>&1)
+            fi
             ic_compare "picasso $pc_plat $src -> $out" "$work/$src" "$work/$out" "$min"
         done
-        wineserver -k >/dev/null 2>&1
+        if [ "$pc_plat" = win64 ]; then
+            WINEPREFIX="$tmp/wine64" wineserver -k >/dev/null 2>&1
+        else
+            wineserver -k >/dev/null 2>&1
+        fi
         kill $pc_x 2>/dev/null
         wait $pc_x 2>/dev/null
     done

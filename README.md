@@ -9,7 +9,7 @@ in Docker.
 ```sh
 docker compose run --rm build                    # build all utilities and NetBolt targets
 docker compose run --rm build make dos           # build one platform
-docker compose run --rm build make win64         # NetBolt for x64 Windows
+docker compose run --rm build make win64         # NetBolt and Picasso for x64 Windows
 docker compose run --rm build make help          # list targets
 docker compose run --rm test                     # format, smoke and protocol tests
 docker compose run --rm build bash               # open the build environment
@@ -77,7 +77,7 @@ python3 tools/build_pack.py --local
 | Utility | Platforms | Description |
 |---|---|---|
 | [NetBolt](#netbolt) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
-| [Picasso](#picasso) | Windows 3.x/9x/NT | Windows 95-style paint program |
+| [Picasso](#picasso) | Windows 3.x/9x/NT, Windows 11 x64 | Windows 95-style paint program |
 | [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
 | `hello` | All Open Watcom platforms | Console example |
 | `hellowin` | Windows | GUI example with resources |
@@ -119,7 +119,8 @@ DOS executable also links mTCP, which is licensed under GPLv3.
 ## Picasso
 
 `PICASSO.EXE` is a paint program for Windows 3.1, Windows 95/98/ME and Windows
-NT/2000, built from the same sources. It uses a Windows 95-style interface with
+NT/2000. `PICASSO64.EXE` is its native x64 build for Windows 11. Both use a
+Windows 95-style interface with
 a 3-D toolbar, tool tips, tool options, color palette and status bar.
 
 - **Drawing:** selection, eraser, fill, color picker, magnifier, pencil, brush,
@@ -178,8 +179,8 @@ The common Open Watcom build system supports these platforms:
 | `win9x` | Windows 95/98/ME | `wcc386` | 386, ANSI API |
 | `winnt` | Windows NT 4.0 / 2000 | `wcc386` | Pentium-tuned, optional UNICODE |
 
-NetBolt also has an x64 Windows target, `win64`, built with MinGW-w64 in the
-same build image. Standard outputs use `build/<platform>/bin/NAME.EXE`; object
+NetBolt and Picasso have x64 Windows targets, `win64`, built with MinGW-w64 in
+the same build image. Standard outputs use `build/<platform>/bin/NAME.EXE`; object
 files, maps and libraries are under `build/<platform>/obj` and `.../lib`.
 
 ### Repository layout
@@ -195,8 +196,8 @@ tests/          shared smoke-test and GUI-test runners
 tools/          project scaffolding and helper scripts
 ```
 
-NetBolt has a dedicated `src/netbolt/Makefile` for its DOS, OS/2, and MinGW-w64
-x64 targets; the top-level Makefile includes these targets in platform builds.
+NetBolt and Picasso have dedicated makefiles for their MinGW-w64 x64 targets;
+the top-level Makefile includes them in `win64` builds.
 
 ### Adding a utility
 
