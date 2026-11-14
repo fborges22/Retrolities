@@ -34,7 +34,7 @@ for exe in build/*/bin/*; do
     platform=$(echo "$exe" | cut -d/ -f2)
     fmt=$(python3 tests/exefmt.py "$exe")
     case "$platform:$fmt" in
-        dos:mz|dos:com|win16:ne|win9x:pe-*|winnt:pe-*|win64:pe-gui) ok "format $exe ($fmt)" ;;
+        dos:mz|dos:com|os2:lx|win16:ne|win9x:pe-*|winnt:pe-*|win64:pe-gui) ok "format $exe ($fmt)" ;;
         *) bad "format $exe ($fmt)" ;;
     esac
 done

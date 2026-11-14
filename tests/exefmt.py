@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the executable format of a file: com, mz, ne, pe-console or pe-gui."""
+"""Print the executable format of a file: com, mz, ne, lx, pe-console or pe-gui."""
 import struct
 import sys
 
@@ -14,6 +14,8 @@ def exe_format(path):
     sig = data[off:off + 4]
     if sig[:2] == b"NE":
         return "ne"
+    if sig[:2] == b"LX":
+        return "lx"
     if sig == b"PE\0\0":
         subsystem = struct.unpack_from("<H", data, off + 24 + 68)[0]
         return {2: "pe-gui", 3: "pe-console"}.get(subsystem, "pe-unknown")

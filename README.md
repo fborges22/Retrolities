@@ -1,7 +1,8 @@
 # Retrolities
 
-Cross-compiled utilities for MS-DOS, Windows 3.x, Windows 9x, Windows NT/2000
-and x64 Windows. The project uses Open Watcom v2 and MinGW-w64 in Docker.
+Cross-compiled utilities for MS-DOS, OS/2 2.0+, Windows 3.x, Windows 9x,
+Windows NT/2000 and x64 Windows. The project uses Open Watcom v2 and MinGW-w64
+in Docker.
 
 ## Quick start
 
@@ -21,8 +22,8 @@ Compose.
 
 ### Build and package
 
-Run the Python helper from the host to build all projects for all five
-platforms and create a single ZIP:
+Run the Python helper from the host to build all projects, including NetBolt's
+six platform targets, and create a single ZIP:
 
 ```sh
 python3 tools/build_pack.py
@@ -33,8 +34,8 @@ The helper builds the Docker build image as needed and runs `make all`.
 The default archive is `build/retrolities.zip`. It contains only `.EXE` and
 `.COM` files from `build/<platform>/bin/`, all at the ZIP root. Unique 8.3
 names (such as `NETBOLTD.EXE`) are preserved. Duplicate names receive short
-platform suffixes: `D`, `16`, `9X`, `NT`, `64`; stems are shortened to keep
-8.3 format (for example, `HELLO16.EXE` and `PICASSNT.EXE`). Any remaining
+platform suffixes: `D`, `2`, `16`, `9X`, `NT`, `64`; stems are shortened to
+keep 8.3 format (for example, `HELLO16.EXE` and `PICASSNT.EXE`). Any remaining
 collisions receive a numeric suffix. Longer names are shortened while
 retaining platform suffixes (for example, `NETBOLT64.EXE` becomes
 `NETBOL64.EXE`). Renaming affects only ZIP entries, not
@@ -46,7 +47,7 @@ replaced only after both the build and packaging succeed.
 | Option | Purpose |
 |---|---|
 | `-o`, `--output PATH` | ZIP destination |
-| `-p`, `--platforms PLATFORM ...` | Build and package selected platforms: `dos`, `win16`, `win9x`, `winnt`, `win64` |
+| `-p`, `--platforms PLATFORM ...` | Build and package selected platforms: `dos`, `os2`, `win16`, `win9x`, `winnt`, `win64` |
 | `-e`, `--executables GLOB ...` | Package selected original filenames, case-insensitively; quote wildcards |
 | `--skip-build` | Package existing executables without Docker or compilers |
 | `--local` | Build with the locally configured toolchain instead of Docker |
@@ -75,7 +76,7 @@ python3 tools/build_pack.py --local
 
 | Utility | Platforms | Description |
 |---|---|---|
-| [NetBolt](#netbolt) | DOS, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
+| [NetBolt](#netbolt) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
 | [Picasso](#picasso) | Windows 3.x/9x/NT | Windows 95-style paint program |
 | [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
 | `hello` | All Open Watcom platforms | Console example |
@@ -83,9 +84,9 @@ python3 tools/build_pack.py --local
 
 ## NetBolt
 
-NetBolt is an independent TCP throughput tester for DOS, Windows 3.x, Windows
-9x, Windows NT/2000 and x64 Windows. It supports client and server modes,
-parallel streams and reverse tests using the iperf 3.x control protocol. The
+NetBolt is an independent TCP throughput tester for DOS, OS/2 2.0+, Windows
+3.x, Windows 9x, Windows NT/2000 and x64 Windows. It supports client and server
+modes, parallel streams and reverse tests using the iperf 3.x control protocol. The
 DOS build uses mTCP; Windows builds use Winsock. NetBolt is not affiliated with
 or endorsed by the iperf3 project.
 
@@ -94,6 +95,7 @@ Build all NetBolt targets as part of the default build, or select one target:
 ```sh
 docker compose run --rm build make PROJECTS=netbolt
 docker compose run --rm build make dos
+docker compose run --rm build make os2
 docker compose run --rm build make win16
 docker compose run --rm build make win9x
 docker compose run --rm build make winnt
@@ -103,6 +105,7 @@ docker compose run --rm build make win64
 | Executable | Platform |
 |---|---|
 | `NETBOLTD.EXE` | MS-DOS / FreeDOS |
+| `NETBOLTO.EXE` | OS/2 2.0+ |
 | `NETBOLT16.EXE` | Windows 3.x |
 | `NETBOLT32.EXE` | Windows 95/98/ME |
 | `NETBOLTN.EXE` | Windows NT 4.0 / 2000 |
@@ -192,9 +195,8 @@ tests/          shared smoke-test and GUI-test runners
 tools/          project scaffolding and helper scripts
 ```
 
-NetBolt has a dedicated `src/netbolt/Makefile` for its mTCP-based DOS target
-and MinGW-w64 x64 target; the top-level Makefile includes it in platform
-builds.
+NetBolt has a dedicated `src/netbolt/Makefile` for its DOS, OS/2, and MinGW-w64
+x64 targets; the top-level Makefile includes these targets in platform builds.
 
 ### Adding a utility
 

@@ -26,6 +26,7 @@ class BuildPackTests(unittest.TestCase):
         self.output = self.root / "build" / "retrolities.zip"
         self.artifacts = {
             "build/dos/bin/HELLO.EXE": b"DOS binary",
+            "build/os2/bin/NETBOLTO.EXE": b"OS/2 NetBolt",
             "build/win16/bin/HELLO.EXE": b"Win16 binary",
             "build/win64/bin/NETBOLT64.EXE": b"x64 binary",
             "build/win16/lib/l/retro.lib": b"library",
@@ -34,6 +35,7 @@ class BuildPackTests(unittest.TestCase):
         }
         self.expected = {
             "HELLOD.EXE": b"DOS binary",
+            "NETBOLTO.EXE": b"OS/2 NetBolt",
             "HELLO16.EXE": b"Win16 binary",
             "NETBOL64.EXE": b"x64 binary",
         }
@@ -92,6 +94,15 @@ class BuildPackTests(unittest.TestCase):
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(set(archive.namelist()), {"HELLO.EXE", "NETBOL64.EXE"})
 
+    def test_os2_is_a_selectable_packaging_target(self):
+        with patch.object(
+            build_pack.subprocess, "run", side_effect=self.create_artifacts
+        ) as run:
+            self.assertEqual(self.run_main("--local", "--platforms", "os2"), 0)
+        self.assertEqual(run.call_args.args[0], ["make", "os2"])
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.namelist(), ["NETBOLTO.EXE"])
+
     def test_skip_build_and_case_insensitive_executable_filters(self):
         self.create_artifacts()
         with patch.object(build_pack.subprocess, "run") as run:
@@ -100,7 +111,7 @@ class BuildPackTests(unittest.TestCase):
             )
         run.assert_not_called()
         with zipfile.ZipFile(self.output) as archive:
-            self.assertEqual(archive.namelist(), ["NETBOL64.EXE"])
+            self.assertEqual(set(archive.namelist()), {"NETBOLTO.EXE", "NETBOL64.EXE"})
 
     def test_long_names_and_stored_compression(self):
         self.create_artifacts()
@@ -109,7 +120,7 @@ class BuildPackTests(unittest.TestCase):
         )
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(set(archive.namelist()), {
-                "HELLO-dos.EXE", "HELLO-win16.EXE", "NETBOLT64.EXE",
+                "HELLO-dos.EXE", "HELLO-win16.EXE", "NETBOLTO.EXE", "NETBOLT64.EXE",
             })
             self.assertTrue(
                 all(info.compress_type == zipfile.ZIP_STORED for info in archive.infolist())

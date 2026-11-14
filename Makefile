@@ -2,6 +2,7 @@
 #
 #   make                 build every project for every platform
 #   make dos             one platform: dos | win16 | win9x | winnt
+#   make os2             NetBolt for OS/2 2.0+
 #   make PROJECTS=hello  restrict to some projects
 #   make V=1             show full compiler / linker command lines
 #   make help            list targets, projects and platforms
@@ -10,8 +11,8 @@ PLATFORMS := dos win16 win9x winnt
 PROJECTS  ?= $(sort netbolt $(patsubst src/%/project.mk,%,$(wildcard src/*/project.mk)))
 TYPE      ?= console
 
-.PHONY: all $(PLATFORMS) win64 netbolt-win64 clean list help new test
-all: $(PLATFORMS) $(if $(filter netbolt,$(PROJECTS)),netbolt-win64)
+.PHONY: all $(PLATFORMS) os2 win64 netbolt-os2 netbolt-win64 clean list help new test
+all: $(PLATFORMS) $(if $(filter netbolt,$(PROJECTS)),netbolt-os2 netbolt-win64)
 
 $(PLATFORMS):
 	@for p in $(PROJECTS); do \
@@ -26,13 +27,18 @@ $(PLATFORMS):
 win64:
 	@$(MAKE) --no-print-directory -C src/netbolt win64
 
+os2:
+	@$(MAKE) --no-print-directory -C src/netbolt os2
+
+netbolt-os2: os2
+
 netbolt-win64: win64
 
 clean:
 	rm -rf build
 
 list:
-	@echo "platforms: $(PLATFORMS) (NetBolt also has win64)"
+	@echo "platforms: $(PLATFORMS) (NetBolt also has os2 and win64)"
 	@echo "projects:  $(PROJECTS)"
 
 new:
@@ -42,8 +48,9 @@ test:
 	@tests/run.sh
 
 help:
-	@echo "make [all]                 build all projects for all platforms (NetBolt: includes win64)"
+	@echo "make [all]                 build all projects for all platforms (NetBolt: includes os2, win64)"
 	@echo "make <platform>            build for one of: $(PLATFORMS)"
+	@echo "make os2                   build NetBolt for OS/2 2.0+"
 	@echo "make win64                 build NetBolt for x64 Windows"
 	@echo "make PROJECTS='a b' ...    restrict the build to some projects"
 	@echo "make new NAME=x [TYPE=gui] scaffold src/x (TYPE: console | gui)"

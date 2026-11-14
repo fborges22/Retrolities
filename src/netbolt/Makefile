@@ -1,7 +1,8 @@
 # NetBolt - uses the Open Watcom + MinGW-w64 toolchain in the parent project.
 #
-#   make            all five targets
+#   make            all six targets
 #   make dos        ../../build/dos/bin/NETBOLTD.EXE
+#   make os2        ../../build/os2/bin/NETBOLTO.EXE
 #   make win16      ../../build/win16/bin/NETBOLT16.EXE
 #   make win32      ../../build/win9x/bin/NETBOLT32.EXE
 #   make winnt      ../../build/winnt/bin/NETBOLTN.EXE
@@ -16,8 +17,9 @@ MINGW_PREFIX ?= x86_64-w64-mingw32-
 W64_CC ?= $(MINGW_PREFIX)gcc
 W64_RC ?= $(MINGW_PREFIX)windres
 
-all: dos win16 win32 winnt win64
+all: dos os2 win16 win32 winnt win64
 dos:   $(B)/dos/bin/NETBOLTD.EXE
+os2:   $(B)/os2/bin/NETBOLTO.EXE
 win16: $(B)/win16/bin/NETBOLT16.EXE
 win32: $(B)/win9x/bin/NETBOLT32.EXE
 winnt: $(B)/winnt/bin/NETBOLTN.EXE
@@ -47,6 +49,21 @@ $(DOS_O)/ipasm.obj: $(MTCP)/tcplib/ipasm.asm | $(DOS_O)
 $(B)/dos/bin/NETBOLTD.EXE: $(DOS_OBJS) | $(B)/dos/bin
 	wlink option quiet system dos option map=$(DOS_O)/netbolt.map option eliminate \
 	      option stack=8192 name $@ $(DOS_OBJS:%=file %)
+
+# ------------------------------------------------------------------ OS/2 2.0
+OS2_O    := $(B)/os2/obj/netbolt
+OS2_CF   := -bt=os2 -mf -3 -ox -s -w3 $(Q) -DIP3_MAX_STREAMS=8 \
+            -DIP3_BLK_MAX=131072 -DIP3_BURST=32 -i=$(COMMON) -i=os2 \
+            -i=$(WATCOM)/h -i=$(WATCOM)/h/os2
+OS2_OBJS := $(OS2_O)/main.obj $(OS2_O)/net_os2.obj $(OS2_O)/ip3core.obj
+
+$(OS2_O)/%.obj: os2/%.c $(COMMON)/ip3core.h $(COMMON)/ip3net.h | $(OS2_O)
+	wcc386 $(OS2_CF) -fo=$@ $<
+$(OS2_O)/ip3core.obj: $(COMMON)/ip3core.c $(COMMON)/ip3core.h $(COMMON)/ip3net.h | $(OS2_O)
+	wcc386 $(OS2_CF) -fo=$@ $<
+$(B)/os2/bin/NETBOLTO.EXE: $(OS2_OBJS) | $(B)/os2/bin
+	wlink option quiet system os2v2 option map=$(OS2_O)/netbolt.map \
+	      library tcpip32.lib name $@ $(OS2_OBJS:%=file %)
 
 # -------------------------------------------------------------- Win16
 W16_O   := $(B)/win16/obj/netbolt
@@ -117,14 +134,14 @@ $(B)/win64/bin/NETBOLT64.EXE: $(W64_OBJS) $(W64_O)/netbolt.o | $(B)/win64/bin
 	$(W64_CC) -mwindows -static -Wl,-Map,$(W64_O)/netbolt.map -o $@ $^ \
 	      -lws2_32 -lgdi32 -ladvapi32 -lm
 
-$(DOS_O) $(W16_O) $(W32_O) $(NT_O) $(W64_O) $(B)/dos/bin $(B)/win16/bin $(B)/win9x/bin $(B)/winnt/bin $(B)/win64/bin:
+$(DOS_O) $(OS2_O) $(W16_O) $(W32_O) $(NT_O) $(W64_O) $(B)/dos/bin $(B)/os2/bin $(B)/win16/bin $(B)/win9x/bin $(B)/winnt/bin $(B)/win64/bin:
 	mkdir -p $@
 
 clean:
-	rm -rf $(B)/dos/obj/netbolt $(B)/win16/obj/netbolt $(B)/win9x/obj/netbolt \
+	rm -rf $(B)/dos/obj/netbolt $(B)/os2/obj/netbolt $(B)/win16/obj/netbolt $(B)/win9x/obj/netbolt \
 	       $(B)/winnt/obj/netbolt $(B)/win64/obj/netbolt
-	rm -f $(B)/dos/bin/NETBOLTD.EXE $(B)/win16/bin/NETBOLT16.EXE \
+	rm -f $(B)/dos/bin/NETBOLTD.EXE $(B)/os2/bin/NETBOLTO.EXE $(B)/win16/bin/NETBOLT16.EXE \
 	      $(B)/win9x/bin/NETBOLT32.EXE $(B)/winnt/bin/NETBOLTN.EXE \
 	      $(B)/win64/bin/NETBOLT64.EXE
 
-.PHONY: all dos win16 win32 winnt win64 clean
+.PHONY: all dos os2 win16 win32 winnt win64 clean

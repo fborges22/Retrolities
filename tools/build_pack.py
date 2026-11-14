@@ -13,8 +13,11 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PLATFORMS = ("dos", "win16", "win9x", "winnt", "win64")
-SUFFIXES = {"dos": "D", "win16": "16", "win9x": "9X", "winnt": "NT", "win64": "64"}
+PLATFORMS = ("dos", "os2", "win16", "win9x", "winnt", "win64")
+SUFFIXES = {
+    "dos": "D", "os2": "2", "win16": "16",
+    "win9x": "9X", "winnt": "NT", "win64": "64",
+}
 
 
 def archive_entries(files, long_names=False):
