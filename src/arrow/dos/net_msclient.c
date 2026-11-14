@@ -211,11 +211,22 @@ int net_connected(NETH h)
 
 int net_send(NETH h, const void *buf, unsigned len)
 {
+    fd_set w;
+    struct timeval tv;
     int rc;
     if (!valid(h)) return -1;
+    /* NDIS transmit completion is asynchronous; check before every write,
+       not just after the send pool has already returned EWOULDBLOCK. */
+    FD_ZERO(&w);
+    FD_SET(sockets[h], &w);
+    memset(&tv, 0, sizeof(tv));
+    rc = _select(MAX_SOCKETS, NULL, &w, NULL, &tv, &sock_error);
+    if (rc < 0) return -1;
+    if (!rc || !FD_ISSET(sockets[h], &w)) return 0;
     if (len > send_limit) len = send_limit;
     for (;;) {
-        rc = _send(sockets[h], (char far *)buf, (int)len, 0, &sock_error);
+        /* MSCLIENT can stall during sustained transmission of unpushed writes. */
+        rc = _send(sockets[h], (char far *)buf, (int)len, MSG_PUSH, &sock_error);
         if (rc >= 0 || sock_error != EMSGSIZE || len <= 1) break;
         /* TCPUTILS.INI's maxsendsize may be smaller than an Arrow block. */
         len /= 2;

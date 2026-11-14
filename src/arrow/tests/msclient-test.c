@@ -10,6 +10,7 @@ static int socket_error, ioctl_error, connect_error, bind_error, listen_error;
 static int select_result, select_exception, peer_error, io_result, io_error;
 static int accepted = -1, dns_calls, last_len;
 static int max_send;
+static int require_push, buffered_bytes, send_calls;
 static struct sockaddr_in target;
 
 test_vector _dos_getvect(unsigned n) { return vectors[n]; }
@@ -55,7 +56,7 @@ int _connect(int s, struct sockaddr *a, int n, int *e)
 int _select(int n, fd_set *r, fd_set *w, fd_set *x, struct timeval *tv, int *e)
 {
     assert(n == MAX_SOCKETS && !r && tv->tv_sec == 0 && tv->tv_usec == 0);
-    if (!select_exception) FD_ZERO(x);
+    if (x && !select_exception) FD_ZERO(x);
     if (!select_result) FD_ZERO(w);
     return result(select_result < 0 ? ENETDOWN : 0, select_result, e);
 }
@@ -74,17 +75,32 @@ int _getsockname(int s, struct sockaddr *a, int *n, int *e)
     memcpy(&p->sin_addr, ip, 4);
     return result(0, 0, e);
 }
-int _send(int s, char *p, int n, int flags, int *e)
+static int scripted_io(int n, int *e)
 {
-    (void)s; (void)p;
-    assert(flags == 0);
     last_len = n;
     if (max_send && n > max_send) return result(EMSGSIZE, 0, e);
     return result(io_error, io_result, e);
 }
+int _send(int s, char *p, int n, int flags, int *e)
+{
+    int rc;
+    (void)s; (void)p;
+    send_calls++;
+    /* Model a resident send pool that retains unpushed writes. */
+    if (require_push && buffered_bytes >= 12)
+        return result(EWOULDBLOCK, 0, e);
+    rc = scripted_io(n, e);
+    if (require_push && rc > 0) {
+        buffered_bytes += rc;
+        if (flags & MSG_PUSH) buffered_bytes = 0;
+    }
+    return rc;
+}
 int _recv(int s, char *p, int n, int flags, int *e)
 {
-    return _send(s, p, n, flags, e);
+    (void)s; (void)p;
+    assert(flags == 0);
+    return scripted_io(n, e);
 }
 int _setsockopt(int s, int level, int option, char *p, int n, int *e)
 {
@@ -193,6 +209,16 @@ int main(void)
     assert(net_send(h, buf, sizeof(buf)) == 3);
     assert(net_recv(h, buf, sizeof(buf)) == 3);
     assert(net_send(h, buf, 65535U) == 3 && last_len == 32767);
+    require_push = 1;
+    for (i = 0; i < 100; i++) assert(net_send(h, buf, sizeof(buf)) == 3);
+    require_push = 0;
+    before = send_calls;
+    select_result = 0;
+    assert(net_send(h, buf, sizeof(buf)) == 0 && send_calls == before);
+    select_result = -1;
+    assert(net_send(h, buf, sizeof(buf)) == -1 && send_calls == before);
+    select_result = 1;
+    assert(net_send(h, buf, sizeof(buf)) == 3 && send_calls == before + 1);
     max_send = 1024;
     assert(net_send(h, buf, 8192U) == 3 && last_len == 1024);
     assert(net_send(h, buf, 8192U) == 3 && last_len == 1024);
