@@ -1,11 +1,11 @@
-# Retrolities test image: headless DOSBox-X (MS-DOS) + Wine (Win16 / Win32)
+# Retrolities test image: QEMU (MagicDisk DOS), DOSBox-X (other DOS), Wine (Windows)
 FROM debian:trixie-slim
 
 RUN dpkg --add-architecture i386 \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates build-essential curl unzip iperf3 python3 dosbox-x wine wine32:i386 wine64 \
-      xvfb xauth xdotool imagemagick \
+      xvfb xauth xdotool imagemagick dosfstools mtools qemu-system-x86 \
  && rm -rf /var/lib/apt/lists/*
 
 # FreeDOS Crynwr packet driver for DOSBox-X's emulated NE2000 adapter.

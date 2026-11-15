@@ -79,6 +79,7 @@ python3 tools/build_pack.py --local
 | [Arrow](#arrow) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
 | [Picasso](#picasso) | Windows 3.x/9x/NT, Windows 11 x64 | Windows 95-style paint program |
 | [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
+| [MagicDisk](src/magicdisk/README.md) | DOS (386 protected mode) | FAT12/16/32 diagnostics; in development |
 | `hello` | All Open Watcom platforms | Console example |
 | `hellowin` | Windows | GUI example with resources |
 
