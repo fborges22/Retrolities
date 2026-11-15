@@ -46,9 +46,11 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-recover-') as directory:
         run(path, '--recover-lost', str(destination), contains='13/13 clusters')
         first = destination / 'REC00001'
         manifest = verify(first, payloads)
+        assert 'OEM code page: 0 (0 means unknown)' in manifest
         assert path.read_bytes() == broken
-        run(path, '--recover-lost', str(destination), contains='13/13 clusters')
-        verify(destination / 'REC00002', payloads)
+        run(path, '--code-page', '850', '--recover-lost', str(destination), contains='13/13 clusters')
+        second_manifest = verify(destination / 'REC00002', payloads)
+        assert 'OEM code page: 850 (0 means unknown)' in second_manifest
         assert (first / 'RECOVERY.TXT').read_text() == manifest
         assert path.read_bytes() == broken
         # Inconsistent mirrors or damaged live file chains make ownership unreliable.
@@ -75,15 +77,24 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-recover-') as directory:
         assert path.read_bytes() == broken
 
         if len(sys.argv) > 2:
-            for mode in ['gap', 'cancel', 'scan-cancel', 'fat-read', 'destination']:
+            for mode in ['gap', 'transient', 'retry-cancel', 'cancel', 'scan-cancel', 'fat-read', 'destination']:
                 output = root / f'{bits}-{mode}'
                 output.mkdir()
                 subprocess.run([str(Path(sys.argv[2]).resolve()), str(path), str(output), mode], check=True)
                 assert path.read_bytes() == broken
-                if mode in ['gap', 'cancel']:
+                if mode in ['gap', 'transient', 'retry-cancel', 'cancel']:
                     manifest = (output / 'REC00001' / 'RECOVERY.TXT').read_text()
                     data = (output / 'REC00001' / 'F0000001.CHK').read_bytes()
-                    if mode == 'gap':
+                    if mode == 'transient':
+                        assert 'FINAL COMPLETE ' in manifest and 'unreadable=0' in manifest
+                        assert 'attempt=2 result=failed' in manifest
+                        assert 'attempt=3 result=readable' in manifest
+                        assert 'UNREADABLE' not in manifest
+                        assert data == payloads[1000] + payloads[1001] + payloads[1002]
+                    elif mode == 'retry-cancel':
+                        assert 'FINAL INCOMPLETE' in manifest and 'unreadable=0' in manifest
+                        assert not data and 'UNREADABLE' not in manifest
+                    elif mode == 'gap':
                         assert 'FINAL COMPLETE_WITH_GAPS' in manifest and 'unreadable=1' in manifest
                         assert 'UNREADABLE file=F0000001.CHK offset=0 ' in manifest
                         assert data[:512] == bytes(512)

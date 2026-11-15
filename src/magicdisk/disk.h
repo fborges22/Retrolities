@@ -7,6 +7,7 @@
 typedef uint32_t dt_u32;
 typedef uint64_t dt_u64;
 
+/* Zero-initialize before installing callbacks; absent optional hooks are NULL. */
 typedef struct {
     void *ctx;
     dt_u32 sectors;
@@ -14,6 +15,8 @@ typedef struct {
     int (*write)(void *, dt_u32, const unsigned char *);
     int (*sync)(void *);
     int (*separate_destination)(void *, const char *);
+    /* Optional extra durability barrier after the journal file is closed. */
+    int (*sync_journal)(void *, const char *);
 } DtDisk;
 
 typedef struct {
@@ -71,6 +74,20 @@ int dt_surface_ex(DtVolume *volume, dt_u32 first, dt_u32 count, DtMap *map, DtPr
 int dt_bios_devices(unsigned *drives, unsigned *count, char *err);
 int dt_bios_open(DtDisk *disk, unsigned drive, char *err);
 void dt_bios_close(DtDisk *disk);
+int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal, char *err);
+#ifdef MAGICDISK_BIOS_TEST_WRITES
+int dt_bios_test_writes(DtDisk *disk, dt_u32 first, dt_u32 count, int force_chs);
+#endif
+/* DDT inventory only: unknown entries include aliases and third-party drivers.
+   A successful query does not prove that unlisted devices are absent. */
+#define DT_BIOS_UNKNOWN 256
+int dt_dos_bios_map(unsigned drives[26], char *err);
+/* True only for a local canonical path mapped to a different physical disk. */
+int dt_dos_bios_destination(unsigned source, const char *path);
+int dt_dos_bios_path(const char *path, unsigned *drive);
+int dt_dos_flush_buffers(void);
+/* Preflight only: require an unmounted disk and a separate known journal disk. */
+int dt_dos_bios_write_check(unsigned source, const char *journal, char *err);
 /* A non-null journal requests locked write access to a mounted DOS volume. */
 int dt_dos_open(DtDisk *disk, unsigned drive, const char *journal, char *err);
 int dt_dos_close(DtDisk *disk);
@@ -120,6 +137,12 @@ typedef struct {
 typedef int (*DtFileVisit)(void *, const DtFile *);
 int dt_scan_files(DtVolume *volume, DtResult *result, DtFileVisit visit, void *visit_ctx,
                   DtReport report, void *report_ctx, DtProgress progress, void *progress_ctx);
+/* Read-only export only: skips unreadable directory sectors after retries.
+   Return 1 means traversal finished; result.complete stays false if any were skipped.
+   Its partial ownership catalog must never authorize repairs or lost-chain reclaim. */
+int dt_scan_recoverable_files(DtVolume *volume, DtResult *result, DtFileVisit visit,
+                              void *visit_ctx, DtReport report, void *report_ctx,
+                              DtProgress progress, void *progress_ctx);
 
 /* Immutable before/after sectors support reviewed changes and journal recovery. */
 enum {
@@ -134,7 +157,15 @@ enum {
     DT_REPAIR_TREE,
     DT_REPAIR_TREE_SOURCE,
     DT_REPAIR_ENTRIES,
-    DT_REPAIR_RELOCATE
+    DT_REPAIR_RELOCATE,
+    DT_REPAIR_RELOCATE_DIR,
+    DT_REPAIR_RELOCATE_ROOT,
+    DT_REPAIR_TIMESTAMPS,
+    DT_REPAIR_FAT_HEADERS,
+    DT_REPAIR_SALVAGE,
+    DT_REPAIR_LFN,
+    DT_REPAIR_ALIASES,
+    DT_REPAIR_LABELS
 };
 
 typedef struct {
@@ -149,11 +180,13 @@ typedef struct {
     /* mark_bad holds the 1-based authority for DT_REPAIR_TREE_SOURCE. */
     int mark_bad, kind;
     unsigned char disk_boot[512], volume_boot[512];
+    /* Version 16 records zero-filled source sectors, one bit per cluster sector. */
+    unsigned char gaps[16];
     DtPatch *patch;
 } DtPlan;
 
 typedef struct {
-    dt_u32 marked, readable, failed, tested_sectors;
+    dt_u32 marked, readable, failed, tested_sectors, failed_sectors;
     int complete;
 } DtRetest;
 
@@ -163,6 +196,8 @@ int dt_bad_plan(DtVolume *volume, dt_u32 cluster, int mark_bad, DtPlan *plan, Dt
                 void *ctx, char *err);
 int dt_relocate_plan(DtVolume *volume, dt_u32 cluster, DtPlan *plan, DtProgress progress, void *ctx,
                      char *err);
+int dt_salvage_plan(DtVolume *volume, dt_u32 cluster, DtPlan *plan, DtReport report,
+                    void *report_ctx, DtProgress progress, void *ctx, char *err);
 /* Create once, reuse with plan builders, then free. Sector pointers may move on growth. */
 DtPlan *dt_plan_create(void);
 void dt_plan_clear(DtPlan *plan);
@@ -170,6 +205,29 @@ void dt_plan_free(DtPlan *plan);
 int dt_plan_init(DtPlan *plan, DtVolume *volume, char *err);
 DtPatch *dt_plan_sector(DtPlan *plan, dt_u32 sector, char *err);
 int dt_plan_set_fat(DtPlan *plan, dt_u32 cluster, dt_u32 value, unsigned copy, char *err);
+/* Field offsets are 13, 14, 16, 18, 22 and 24 in a short directory entry. */
+int dt_label_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                     DtProgress progress, void *ctx, char *err);
+int dt_label_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+/* 1 available, 0 collision, -1 unreadable/malformed/cancelled. Directory zero
+   means the root; skip_sector is volume-relative. Does not prove ownership. */
+int dt_directory_name_available(DtVolume *volume, dt_u32 directory_start, const char *candidate,
+                                dt_u32 skip_sector, unsigned skip_offset, DtProgress progress,
+                                void *ctx);
+/* First invalid alias byte, or -1 when no violation is proven under the OEM policy. */
+int dt_invalid_alias_byte(const unsigned char *entry);
+int dt_alias_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                     DtProgress progress, void *ctx, char *err);
+int dt_alias_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+/* Validate one complete on-disk LFN group against its following alias. */
+int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned char *alias);
+int dt_lfn_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                   DtProgress progress, void *ctx, char *err);
+int dt_lfn_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+int dt_timestamp_valid(const unsigned char *entry, unsigned field);
+int dt_timestamp_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err);
+int dt_timestamp_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_entry_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
                      DtProgress progress, void *ctx, char *err);
 int dt_entry_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
@@ -187,6 +245,7 @@ int dt_chain_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *repo
                      DtProgress progress, void *ctx, char *err);
 int dt_chain_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_lost_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+int dt_fat_header_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_fsinfo_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_boot_primary_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_boot_backup_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
@@ -203,10 +262,18 @@ int dt_plan_restore_torn_ex(DtVolume *volume, const char *journal, DtProgress pr
 int dt_plan_restore(DtVolume *volume, const char *journal, char *err);
 
 typedef struct {
-    dt_u32 lost, clusters, files, unreadable, damaged, issues;
-    int complete;
+    dt_u32 lost, clusters, files, unreadable, damaged, issues, candidates;
+    int complete, catalog_incomplete;
     char directory[260];
 } DtRecovery;
+
+int dt_recover_deleted(DtVolume *volume, const char *destination, DtRecovery *result,
+                       DtProgress progress, void *ctx, char *err);
+
+/* Read-only discovery from intact dot pairs in allocated, unowned clusters.
+   Exported directory contents remain unverified; no directory is reattached. */
+int dt_recover_directories(DtVolume *volume, const char *destination, DtRecovery *result,
+                           DtProgress progress, void *ctx, char *err);
 
 int dt_recover_lost(DtVolume *volume, const char *destination, DtRecovery *result,
                     DtProgress progress, void *ctx, char *err);
@@ -214,8 +281,20 @@ int dt_recover_lost(DtVolume *volume, const char *destination, DtRecovery *resul
 int dt_export_files(DtVolume *volume, const char *destination, DtRecovery *result,
                     DtProgress progress, void *ctx, char *err);
 
+int dt_export_cluster_file(DtVolume *volume, dt_u32 cluster, const char *destination,
+                           DtRecovery *result, DtProgress progress, void *ctx, char *err);
+
 /* Render UTF-8 through VGA CP437, substituting unavailable glyphs with '?'. */
 void dt_display_utf8(const char *input, char *output, size_t capacity, size_t skip);
+void dt_format_sectors(dt_u32 sectors, char *output, size_t capacity);
+int dt_parse_u32(const char *text, unsigned base, dt_u32 *value);
 int dt_ui(const char *path);
+
+/* Process-wide OEM alias decoding; call before scanning. 0 means unknown.
+   Explicit CP437, CP850, CP852, CP860 and CP866 are accepted.
+   Failed selection leaves it unchanged.
+ */
+int dt_set_oem_codepage(unsigned codepage);
+unsigned dt_oem_codepage(void);
 
 #endif

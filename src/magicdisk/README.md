@@ -21,7 +21,27 @@ ScanDisk or Norton Disk Doctor replacement.
 The screenshot shows a generated test floppy with six files and three marked bad
 clusters. Map cells display actual FAT entries, not decorative or simulated data.
 
+![MagicDisk Diagnose menu](docs/diagnose.png)
+
+Menus size to their labels and scroll above the status bars. The highlighted
+heading identifies the open menu; arrow indicators show additional items.
+
 ## Build and run
+
+A self-contained development bundle can be built with
+`make -C src/magicdisk package`. The result is
+`build/dos/dist/MAGICDSK.ZIP`, containing the executable, an ASCII quick-start
+`README.TXT`, MIT/DOS32A/Open Watcom/Unicode notices and `SHA256.TXT` checksums.
+All archive members have DOS 8.3 names; text uses CRLF line endings. The ZIP uses
+standard deflate without Zip64, encryption or long filenames. It contains no
+operating system, boot image or proprietary driver. Identical inputs with the
+same packaging tools produce identical archive bytes.
+
+`make -C src/magicdisk test-package DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) validates the archive and runs its packaged executable
+in QEMU, checks CLI help and the About/developer credit, reads the guide through
+DOS, and verifies payload files remain byte-identical. This is a development
+bundle, not a claim that all remaining replacement features are complete.
 
 ```
 make PROJECTS=magicdisk dos
@@ -46,11 +66,38 @@ sector zero (for example, a floppy image). Partition numbers are one-based and
 follow primary entries, then logical entries. `--list` lists MBR partitions;
 `--partition` mounts the selected volume independently of DOS drive letters.
 
+Filesystem checks validate reserved FAT entries 0 and 1 as well as allocation
+links. Identical corruption in every FAT header is reported as `FAT_HEADER`,
+even when the FAT copies match. Findings identify the copy and absolute disk
+LBA. FAT16/FAT32 clean-shutdown and I/O-error flag bits are preserved and are
+not treated as malformed reserved bits. FAT32 high reserved nibble bits are
+ignored; when mirroring is disabled, only the selected active FAT is checked.
+A header problem blocks unrelated repairs. A valid authoritative FAT copy can
+repair another copy's header through the existing journaled FAT-copy repair.
+
+When every copy has header damage, `--repair-fat-headers` or **Diagnose >
+Rebuild FAT headers** reconstructs reserved entries from the BPB media byte.
+The proposed result must pass allocation and directory ownership checks;
+remaining mirror disagreements are refused. FAT16/FAT32 status flags and
+FAT32 high reserved bits are retained. With mirroring disabled, only the active
+FAT is changed. A recognized media descriptor (F0 or F8 through FF) is required.
+This operation uses journal version 15, supports exact undo and interrupted-write
+recovery, and does not change allocated file data. Preview first, then use
+`--apply --journal HEADERS.MDJ` to apply it with a new journal on a separate disk.
+
+`make -C src/magicdisk test-fat-headers DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) tests identical header damage, refused marker writes,
+authoritative-copy repair, header reconstruction through CLI and TUI, injected
+write-failure rollback, and exact journal undo in QEMU. Native
+tests also cover media-byte mismatches, status-bit combinations, active FATs,
+and reserved allocation values at the FAT12 size limit.
+
 Exit status: **0** inspection completed without detected issues; **1** inspection
 completed with issues; **2** invalid input, unsupported geometry, or incomplete
 inspection. An incomplete inspection must never be interpreted as a clean disk.
 Inspection opens images read-only. Marker writes require explicit approval and
-a new journal file. BIOS access currently implements reads only.
+a new journal file. BIOS repairs are available through the CLI and menus for unmounted
+IDE partitions; see [BIOS writes](#bios-writes-and-tests).
 Physical drives are identified by BIOS hexadecimal numbers: `00` for A, `01` for
 B, and `80` for the first hard disk. Direct access requires BIOS-visible media;
 Host-directory shares are not BIOS disks.
@@ -67,10 +114,29 @@ as documented in the [AMIBIOS technical reference](https://bitsavers.trailing-ed
 
 ## Workspace
 
+Allocation-map errors include unreadable FAT entries and invalid/reserved FAT
+values. Reserved values remain errors even near the largest FAT12/FAT16 volume
+sizes, where their numeric values overlap the cluster-number range. An invalid
+map range clears the previous map instead of leaving stale cells visible.
+`make -C src/magicdisk test-map-dos DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) runs the production map implementation against
+synthetic FAT12/16/32 boundary values, read faults, cancellation and range checks
+inside QEMU; no physical source is written by this test.
+
 - **F10** opens the Disk, Diagnose, View, Reports and Help menus.
+  Arrows choose menus/items; Home/End select the first/last item, Page Up/Down
+  move through long menus, Enter opens the action, and Esc closes the menu.
+  Menus fit their longest label and scroll above the two bottom status bars.
 - **F2** selects a primary or logical volume; **F3** checks the filesystem.
 - **F4** reads every sector in the volume, including filesystem metadata.
+- **T**, or **View > Retest map block**, reads only the selected block. On an
+  allocation map this tests every sector in its cluster range; on a surface map
+  it tests the displayed sector range, including metadata if selected. The new
+  map and findings replace the previous results. `RANGE COMPLETE` means only
+  that range finished; F7 reports its volume sectors and absolute disk LBAs.
+  Switching back with F5 preserves this range summary. No markers are changed.
 - **F5** loads the allocation map; **F6** browses findings; **F7** saves a report.
+- **O** opens the cluster-owner viewer; **View > Cluster owner** offers the same action.
 - **F8** opens the read-only sector viewer at the selected block. It is also in
   **View > Sector viewer** and works on an opened image without a valid FAT volume.
 - **Arrows** select map blocks; **Enter** shows counts and ranges. Enter again
@@ -81,6 +147,14 @@ as documented in the [AMIBIOS technical reference](https://bitsavers.trailing-ed
 - **Help > About** contains the developer credit and build information.
 - In Findings, **Left/Right** scroll long paths horizontally; reports retain the
   complete names even when they do not fit on the screen.
+- **P** in Findings opens the existing repair workflow for supported filesystem
+  issues: file lengths, chain damage, dot metadata/directory sizes, timestamps,
+  reserved FAT headers, FAT-copy disagreements, FSInfo, and backup/primary boot
+  metadata. The footer advertises this action only when available. The preview
+  covers the volume's applicable issues, not just the selected entry. It still
+  requires the normal review, typed confirmation and separate journal before
+  any write. FAT-copy conflicts require an explicit authority selection.
+  Unsupported findings and proposed-change lists do not offer this shortcut.
 
 The sector viewer shows 16-byte rows in hexadecimal and printable ASCII, with
 nonprintable bytes shown as dots. Left/Right selects the lower or upper 256 bytes
@@ -110,11 +184,74 @@ these locations before its summary. Surface findings do not identify file
 ownership or change bad-cluster markers.
 Allocation colors do not certify the health of the owning file. Surface reads
 cannot detect latent write failures. Reports preserve existing filenames and
-record incomplete checks and omitted findings (the UI stores up to 512 findings).
+record incomplete checks and omitted findings. The findings list grows as needed
+until memory is exhausted; it has no fixed 512-entry limit. If allocation fails,
+the workspace retains earlier findings and counts subsequent omitted entries.
+Saving a report commits the file before reporting success and refuses to
+overwrite an existing file.
+
+The summary row retains the last surface scan's tested/total and failed-sector
+counts when switching back to the allocation map. Incomplete checks and surface
+scans use amber rather than a success color. Repair previews explicitly say
+that no repair has been applied; salvage previews also identify zero-filling.
+After a repair or source change clears the results, the row prompts for a fresh
+check instead of displaying an earlier scan as current.
+
+`make -C src/magicdisk test-findings-capacity DOS_BOOT="..." DOS_KERNEL=msdos622`
+checks 700 findings, browsing to the last entry, repeated scans, complete report
+contents and overwrite refusal in QEMU. The same test supports `freedos` and
+`win98` and verifies that the inspected disk and original boot media are unchanged.
 
 ![MagicDisk About dialog](docs/about.png)
 
+## Identify a cluster's file or directory
+
+Press **O** on the map to look up the data cluster at the start of the selected
+block. For an exact sector, open **F8**, navigate with **G**, then press **O**.
+The viewer shows the first owner found in scanned allocation prefixes, its
+UTF-8 path rendered with DOS glyphs, file/directory type, starting cluster,
+recorded size and directory-entry disk LBA/byte offset. FAT32 root clusters
+are identified separately. Left/Right scroll long paths; Home returns to the
+start, and Esc returns to the same map selection or sector.
+
+For a regular file, **R** opens the selected-file export review using that exact
+cluster. Choose a separate destination to copy the file before repair; there is
+no cluster number to retype. Export rescans the source and retains the existing
+gap, shared-prefix and incomplete-catalog policies. Cancelling or finishing
+returns to the original map or sector. The action is unavailable for directory
+owners and clusters with no identified file owner.
+
+The lookup reads metadata without writing or replacing existing findings.
+Esc can cancel its scan. Incomplete scans explicitly warn that more references
+may be unknown, and any scan findings warn that ownership may be affected.
+Cross-linked files do not become proof of unique ownership merely because a
+first owner is shown. An empty result means no owner was found in the scanned
+allocated prefixes. Metadata sectors and fixed FAT12/16 root sectors are
+identified as outside data-cluster ownership.
+
+`make -C src/magicdisk test-owner DOS_BOOT="..." DOS_KERNEL=msdos622`
+tests map/menu/sector lookup on FAT12/16/32 in QEMU, including Unicode filenames,
+head/middle/tail file clusters, directories, the FAT32 root, free clusters,
+metadata rejection, unreadable directories and cross-link warnings. It also
+supports `freedos` and `win98`; each case checks the complete source image
+remains unchanged. The tour exports the file from a middle-cluster lookup,
+verifies its Unicode path and exact payload, checks cancellation and confirms
+that partial catalogs and shared-allocation findings remain visible in the
+export manifest.
+
 ## Bad sectors: retest, mark and unmark
+
+Retest summaries distinguish sectors attempted from failed reads. A cancelled
+retest remains explicitly incomplete, records where it stopped, and retains
+failures already observed in a partially tested cluster. A cluster is counted
+as readable only after every sector passes. In incomplete reports, marked-cluster
+totals include only those found before stopping. Saved reports include the
+attempted and failed-sector totals; no bad markers are changed by retesting.
+
+`make -C src/magicdisk test-retest DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) tests successful reads, an injected BIOS read error,
+and menu cancellation with report export in QEMU on FAT12/16/32. Whole-disk
+comparisons verify that all three paths leave the source unchanged.
 
 The **Diagnose** menu includes **Retest marked bad**, **Mark bad sector**,
 **Unmark bad sector**, and **Restore journal**. Sector inputs are absolute disk
@@ -124,9 +261,11 @@ that entire range before asking for confirmation.
 
 - **Retest** reads every sector in each marked bad cluster, reports individual
   unreadable disk LBAs, and keeps all markers. It works with BIOS disks and images.
-- **Mark** accepts a sector in a free data cluster. It refuses allocated clusters
-  and metadata sectors; relocating files away from damaged clusters is not yet
-  implemented.
+- **Mark** accepts a sector in a free data cluster. For a cluster owned by one
+  regular file or directory, it instead offers relocation and requires typing **RELOCATE**.
+  All source sectors must be readable. The file data moves to a free cluster;
+  the original cluster becomes marked bad. FAT32 root-directory clusters are
+  supported; FAT12/16 fixed root sectors and other metadata are refused. The source data sectors are never written.
 - **Unmark** accepts an already marked cluster only after every sector passes a
   fresh read test. It returns the cluster to free space. Passing a read test does
   not establish long-term media health or test whether writes will succeed.
@@ -154,7 +293,8 @@ MAGICDSK FLOPPY.IMG --restore-journal MARK.MDJ --apply
 sector LBAs. Without `--apply`, marker commands only preview the proposed change.
 `--partition N` selects the target volume inside an MBR disk image. Keep writable
 images unmounted and unused by other programs. The BIOS backend supports
-retesting and previews. To repair physical media mounted by DOS, select
+retesting, previews and guarded repairs of unmounted IDE partitions.
+To repair physical media mounted by DOS, select
 **Disk > DOS volume** or use `--drive LETTER`.
 
 Before writing, MagicDisk rechecks the filesystem and saves complete before/after
@@ -190,7 +330,149 @@ restricting writes to sector zero and requiring an unchanged backup source.
 Combined file/directory repair uses version 8 and revalidates the original tree
 before undo. Selected-source FAT/tree repairs use version 9 and record the
 chosen authority alongside the original metadata. Directory-entry repairs use
-version 10. This build restores all ten versions.
+version 10. Readable file-cluster relocation uses version 11, journaling destination
+contents, allocation links, the start entry when needed, and FAT32 free-space hints.
+Directory relocation uses version 12 and includes self and child-parent pointer
+updates when the first cluster moves. FAT32 root relocation uses version 13,
+allowing the root-cluster field (and no other boot fields) to change in the primary
+boot sector. Undo reconstructs the original root from the journal before checking
+ownership. Invalid-timestamp clearing uses version 14. Reserved FAT-header
+repair uses version 15 and restricts records to the first sector of each selected
+FAT; undo revalidates the proposed headers and original ownership. This build
+restores all sixteen versions. File salvage uses version 16 and records a
+128-bit mask of zero-filled source sectors in addition to the before/after
+records. Apply and undo reconstruct both the data and this mask.
+
+### Relocate a readable file cluster
+
+`MAGICDSK IMAGE.IMG --relocate-cluster N` previews relocation and retirement of
+cluster N. Add `--apply --journal NEWFILE.MDJ` to commit it. The TUI offers the
+same operation through **Mark bad sector** when the selected cluster belongs to
+a regular file or directory. File names (including LFN entries), sizes and timestamps remain
+unchanged; copying includes the full cluster, including file slack. Moving a
+directory head updates its own dot entry and the dotdot entries of immediate
+child directories; directory tails need only allocation-link changes. A FAT32
+root head instead updates the primary and available backup BPB root pointers,
+after allocation and FSInfo changes, with the backup written before the primary.
+Windows 98 also needs its cached root pointer refreshed through the final flush. Children of the root retain parent zero.
+Root-relocation FSInfo records use cluster 2 as a concrete search-start hint,
+avoiding DOS normalization of an unknown hint after the journaled commit. Destination
+data is written before owner links change. Undo restores the destination's previous
+contents and allocation, and requires unchanged journaled sectors and ownership.
+A modified source payload also prevents replay of the original plan during undo.
+
+This requires a clean allocation/ownership scan and readable source and destination
+sectors. Replacement selection reads every sector of each free candidate and skips
+unreadable candidates without changing their allocation or contents. The search
+can be cancelled and refuses relocation if no fully readable free cluster exists.
+Copying source data makes at most three read attempts per sector, with cancellation
+between retries. This also applies when the plan is revalidated before apply or
+undo. A successful retry preserves the bytes returned by the disk; persistent
+failures still refuse relocation. Metadata reads used to establish ownership
+are not retried by this copying step.
+Export recoverable data before working on unreadable source clusters. Ordinary
+relocation never substitutes bytes; explicit file salvage is described below.
+Automatic retirement of every surface failure remains separate work.
+
+`make -C src/magicdisk test-relocate-faults DOS_BOOT="..." DOS_KERNEL=msdos622`
+runs synthetic file and directory relocation faults under QEMU, including an
+unreadable first destination, exhausted usable destinations, cancellation,
+transient source failures, retry limits, cancellation between retries,
+stale source data, partial writes, rollback and exact undo. It also supports
+`freedos` and `win98`.
+
+### Salvage and retire an unreadable file cluster
+
+`MAGICDSK IMAGE.IMG --salvage-cluster N` previews copying the readable sectors
+of a uniquely owned regular-file cluster into a readable free cluster. After
+three failed reads, an entire 512-byte sector becomes **zero bytes in the
+replacement**. This is a lossy operation: missing bytes are not recovered.
+Names, file length, timestamps, readable data and allocation order remain
+intact; the original cluster is marked bad and its physical sectors are never
+written. The operation includes cluster slack, so reported missing-byte counts
+can include bytes beyond the logical end of the file.
+
+The preview identifies the owner with `SALVAGE_FILE` and lists each affected
+disk LBA with `SALVAGE_GAP`. Add `--apply --journal NEWFILE.MDJ` only after
+reviewing these losses and exporting needed data. The TUI offers salvage when
+**Mark bad sector** cannot relocate a live file because source data is
+unreadable. Enter previews the losses; the review shows the filename and count
+of zero-filled sectors, then requires typing **SALVAGE**. Cancel the review to
+inspect **F6 Findings** or save the preview with **F7**; gap findings support
+**F8** inspection and **R** file export. The same backend, separate-journal and
+BIOS confirmations apply as for other writes.
+
+Directories and the FAT32 root are excluded: zero-filled directory metadata
+could hide files or break ownership. A clean allocation/ownership scan is
+required. Apply rechecks all source reads, the proposed gap mask and destination
+bytes before writing. If source readability or contents change, create a fresh
+preview; the old approval does not authorize different losses.
+
+Version-16 journals retain original destination bytes, metadata and the gap
+mask. Undo restores the original allocation and destination contents, putting
+the file back on its original cluster; it does **not** recover that cluster's
+unreadable bytes. Undo refuses changed source data or a changed gap mask,
+including formerly unreadable sectors that become readable. Keep the original
+media and journal when this happens. Partial-write recovery retains the same
+ownership and source validation requirements.
+
+`make -C src/magicdisk test-salvage DOS_BOOT="..." DOS_KERNEL=msdos622`
+tests production CLI salvage/undo on FAT12/16/32 and the FAT12 TUI review,
+cancellation, preview report and typed approval in QEMU. It also supports
+`freedos` and `win98`. Tests verify Unicode names, recovered payload with exact
+zero-filled gaps, untouched source sectors, all journal records and exact undo.
+The target also runs `test_salvage_dos.py --torn-undo`: ordinary undo must refuse
+a journaled sector containing both old and new bytes, while explicit
+`--accept-torn` recovery restores the exact original disk. Native fault tests
+cover persistent write failures that defeat rollback at every journaled write,
+retained-journal recovery, unrelated-byte refusal, cancellation before undo,
+retry cancellation, changed readability, tampered gap masks, partial writes
+and rollback; readable head/middle/tail cases and directory
+refusal are covered across FAT formats.
+
+### Act on a failed-sector finding
+
+After a surface read or bad-cluster retest, press **F6** and select a finding.
+**M** reviews marking that data cluster bad; **U** retests a marked cluster and
+reviews unmarking it only if all sectors are readable. The action uses the
+selected finding's exact disk LBA, so there is no sector number to transcribe.
+The footer shows the available action. Metadata and recovery-mount findings
+remain inspection-only, with **F8** opening the sector viewer.
+
+These shortcuts use the same ownership checks, relocation rules, confirmation,
+new journal, backend checks and exact undo as the Diagnose menu. They do not
+apply a change just by selecting a finding. Cancelling or completing an action
+returns to the main map; an attempted unmark of an unreadable cluster leaves
+its marker intact. Findings beyond the displayed storage limit remain in the
+omitted count and are not silently acted on.
+
+`make -C src/magicdisk test-finding-actions DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) exercises surface marking, cancellation, failed and
+successful unmarking, exact journal undo and metadata-sector refusal in QEMU.
+
+### Recover the file owning a selected cluster
+
+`MAGICDSK IMAGE.IMG --export-cluster N DIRECTORY` exports only the regular file
+whose validated allocated prefix contains cluster N. N may be the first, middle
+or last cluster. In the **F6 findings browser**, **R** uses the selected failed
+sector to find and export its owning file; choose a separate recovery destination
+in the dialog. This is useful before attempting repair of a file with unreadable
+sectors. The source remains read-only.
+
+The normal live-file recovery rules apply: logical size for healthy files,
+allocated prefixes for damaged chains, three payload read attempts, recorded
+zero-filled gaps, UTF-8 names in `RECOVERY.TXT`, and numbered export parts.
+The manifest also records `SELECTION cluster=N`. Shared allocation is handled
+through the scanner's first validated owner; this does not reconstruct unresolved
+aliases or missing directory contents. Directory clusters, free clusters and
+clusters outside validated regular-file prefixes are refused before creating an
+output directory. Global metadata findings still appear in the manifest.
+
+`make -C src/magicdisk test-selected-export DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) checks the command and the findings shortcut with
+long names, injected unreadable sectors, exact recovered contents and unchanged
+source media. Native tests cover head/middle/tail selection, damaged prefixes,
+mirror disagreement, missing owners, read retries and cancellation.
 
 ### Recover an interrupted sector write
 
@@ -281,13 +563,49 @@ to source sectors. Duplicate source names remain separate numbered exports.
 UTF-8 `message_hex`. This includes damaged long-name metadata even when the file
 contents can be exported intact under a short-name fallback.
 
-Unreadable data is zero-filled and listed explicitly. Shared tails are exported
+Payload sectors receive up to three read attempts. `READ_RETRY` manifest entries
+record each retry's disk LBA, file offset, attempt number and result. Successful
+retries preserve the recovered bytes; three failed reads produce an explicitly
+listed zero-filled gap. Esc can cancel before each retry. Unreadable allocation
+metadata and inconsistent FAT copies still stop recovery.
+Shared tails are exported
 through their first scanned owner; later aliases may have empty or truncated
 exports. The operation cannot infer inaccessible directory contents, recover
-deleted entries, or restore missing clusters. It requires a complete directory
-scan and consistent FAT copies. Inspect the manifest's scan findings count and
+deleted entries, or restore missing clusters. Inspect the manifest's scan findings count and
 damage records before treating the output as a backup; empty directories and
 filesystem attributes/timestamps are not recreated.
+
+For live-file export only, directory-sector reads also receive three attempts.
+A persistent failure records `DIRECTORY_GAP` with the disk LBA and skips its
+16 unknown entries, allowing files in other readable sectors and directories
+to be exported. An LFN group is never joined across a gap; affected surviving
+entries use their short aliases. Entries after a known end marker are not
+inventoried. Missing directory entries cannot be reconstructed by this process.
+
+Any skipped directory sector makes the catalog and final export **INCOMPLETE**
+(exit status 2), even when every exported file's payload was readable. The
+manifest records this state and labels unseen allocated clusters
+`UNRESOLVED_CLUSTERS`, since hidden entries may own them. Selected-file export
+can export a visible owner from this partial catalog, but also remains
+incomplete; a missing selected owner is refused without creating output.
+This recovery-only scan never supplies ownership authorization to repairs,
+lost-chain reclamation or ordinary filesystem checks; those still stop at
+unreadable directory metadata.
+The CLI and TUI results explicitly identify an incomplete directory catalog.
+Their unreadable-sector counter describes file payload only; zero payload
+failures do not mean that all directory entries or files were recovered.
+
+`make -C src/magicdisk test-directory-gaps DOS_BOOT="..." DOS_KERNEL=msdos622`
+checks FAT12/16/32 exports around a directory-sector failure in QEMU. The test
+verifies every surviving entry and payload, LFN fallback, incomplete manifests,
+strict repair refusal and unchanged source bytes. It supports `freedos` and
+`win98` too. The target also runs `--root-gap`, where the missing root sector
+hides an entire child directory. With `--ui`, it also exports through the Reports
+menu and checks the incomplete-catalog and payload-count messages. Only independently visible root files are
+exported; hidden descendants are not invented or classified as reclaimable
+orphans. Both fixed FAT12/16 roots and chained FAT32 roots are tested.
+Native tests cover transient failures, cancellation between
+directory retries and selected owners visible or hidden by the gap.
 
 Cancellation and output failures retain partial files. A completed export has a
 committed `FINAL` record; `COMPLETE_WITH_GAPS` indicates damaged prefixes or missing
@@ -309,7 +627,13 @@ The destination directory must already exist. MagicDisk creates a new
 `REC00001` directory (or the next unused number), containing `.CHK` files and
 `RECOVERY.TXT`. It does not change source allocation or attach files to the
 source directory. Mounted DOS sources require a destination on another volume;
-open BIOS devices by DOS drive letter so this check can be performed.
+BIOS sources require a local destination on a different physical BIOS disk.
+The TUI live-file, deleted-file and lost-chain export menus use the same
+destination checks as the CLI, including for hidden and unmounted partitions.
+DOS canonicalization resolves the destination path before its kernel-reported
+physical identity is checked. Another partition of the source disk, remote
+paths and unknown device mappings are refused. Hidden FAT volumes can therefore
+be exported through BIOS access without first assigning them a DOS drive letter.
 
 Recovery first scans directory ownership and requires consistent FAT copies.
 Damaged FSInfo signatures, hints or a differing backup boot sector do not block
@@ -321,7 +645,8 @@ contains full clusters, including any slack bytes, and shared tails are not
 repeated. Files split at 1 GiB boundaries.
 
 The manifest maps every cluster to its output file, byte offset and source
-sector. Unreadable data sectors become zero-filled gaps with individual entries.
+sector. Payload reads use the same three-attempt retry policy as live-file export.
+Sectors that still cannot be read become zero-filled gaps with individual entries.
 Cancellation or output failure retains partial files and an incomplete manifest;
 only a successfully committed export gets a complete final record. CLI status is
 0 for complete, 1 for complete with unreadable sectors, and 2 for incomplete or
@@ -648,8 +973,8 @@ FSInfo damage can be repaired separately after restoring the primary.
 Recovery changes only the primary BPB/boot sector. It does not reconstruct
 additional bootstrap sectors, prove that boot code executes, or recover when
 both copies are invalid. Undo requires the backup to remain unchanged and the
-primary to match either journal image. An image is required when DOS cannot
-mount the damaged physical volume: BIOS-only writes remain unavailable.
+primary to match either journal image. When DOS cannot mount the damaged physical volume, use an image or the guarded
+BIOS access on a supported unmounted IDE disk.
 
 ## Rebuild the FAT32 backup boot sector
 
@@ -672,8 +997,8 @@ and verifies the write; undo restores the exact damaged backup bytes.
 This operation repairs the one sector containing the backup BPB. It does not
 reconstruct the additional bootstrap sectors or recover an unmountable primary
 boot sector. It does not verify that the primary bootstrap code is executable.
-Physical BIOS targets support CLI preview; apply through the mounted DOS volume
-or a disk image.
+Physical BIOS targets support guarded repairs on unmounted IDE disks.
+Mounted media can be repaired through its DOS volume; images are also supported.
 
 ## Repairing simultaneous damage
 
@@ -708,17 +1033,96 @@ Invalid LFN sets are reported and the associated short alias is used instead.
 Diagnostic paths and saved or redirected reports use UTF-8. The DOS screen maps
 available characters to VGA CP437 glyphs and shows `?` for unavailable glyphs;
 the original Unicode remains intact in exported reports. Short-name bytes
-outside ASCII are escaped when no valid LFN exists, because FAT does not record
-the OEM code page that created an alias. Directory `.` and `..` links, their
+outside ASCII are escaped by default when no valid LFN exists, because FAT does
+not record the OEM code page that created an alias. Select **Disk > OEM code
+page** or `--code-page NUMBER` only when the source encoding is
+known. Use `0` to restore the unknown/escaped policy. The choice applies to all
+volumes inspected during that process, including repair validation and live-file
+exports. Changing it in the TUI clears prior findings; run F3 again. Reports and
+all recovery/export manifests record the choice. To start the TUI with a policy:
+
+```
+MAGICDSK --code-page 850 --tui
+MAGICDSK FLOPPY.IMG --code-page 437
+```
+
+Explicit decoding uses the [CP437 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/PC/CP437.TXT),
+[CP850 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/PC/CP850.TXT),
+[CP852 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/PC/CP852.TXT),
+[CP860 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/PC/CP860.TXT),
+and [CP866 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/PC/CP866.TXT).
+Supported selections are 0 (unknown), 437, 850, 852 (Central European),
+860 (Portuguese), and 866 (Cyrillic). Invalid selections preserve the previous
+policy. Scans, repair validation and recovery exports share this policy.
+Short-name lowercase display flags are applied independently to the filename
+and extension, including decoded accented letters, using Unicode 3.2 simple
+lowercase mappings. Unknown OEM bytes remain escaped and are never lowercased
+by guessing their encoding. These flags do not override a valid long name.
+Aliases then participate in the same Unicode simple-uppercase collision checks
+as LFNs. For example, CP850 `øFILE.TXT` and `ØFILE.TXT` conflict, while those same
+stored lead bytes represent distinct currency symbols under CP437. The escaped
+lead byte `05` is first restored to `E5` and then decoded. No source name bytes
+are rewritten, and the running DOS display/code page does not choose a source
+encoding automatically. These five single-byte pages do not cover DBCS encodings
+or every DOS locale's case rules. Directory `.` and `..` links, their
 positions and attributes, directory sizes, and volume-label placement are also
-checked. Per-directory name indexing detects duplicate DOS aliases, exact Unicode
-LFNs, ASCII case-insensitive long names, and collisions between an alias and
-another entry's long name. An entry's own alias/LFN pair is accepted, as are the
-same names in different directories. Conflicts report the first entry's disk
+checked. Per-directory name indexing detects duplicate DOS aliases, Unicode
+LFNs differing only by simple uppercase mapping, and collisions between an alias
+and another entry's long name. An entry's own alias/LFN pair is accepted, as are
+the same names in different directories. Conflicts report the first entry's disk
 sector and byte offset, and block ownership-sensitive repairs; inspection never
-renames or deletes either entry. Non-ASCII case equivalence depends on the
-original locale/code page and is not guessed. Timestamp validation remains
-unfinished.
+renames or deletes either entry.
+
+Root directories may contain only one live volume-label entry. Extra labels
+produce `DIR_LABEL` findings identifying the first label's disk sector and byte
+offset, including when the labels have identical text or lie in different
+sectors. Deleted labels and entries beyond the directory end marker are ignored.
+Inspection preserves every label; ownership-sensitive repairs refuse the
+conflict rather than choosing a label implicitly. Existing label checks also
+reject labels in subdirectories or with allocated clusters/nonzero file sizes.
+`make -C src/magicdisk test-labels DOS_BOOT="..." DOS_KERNEL=msdos622`
+tests label conflicts and repair refusal on FAT12/16/32 in QEMU; `freedos` and
+`win98` select the other supported DOS kernels.
+
+Long-name comparison uses a pinned [Unicode 3.2 data table](https://www.unicode.org/Public/3.2-Update/UnicodeData-3.2.0.txt)
+with one-code-point uppercase mappings. Latin accents, Greek, Cyrillic and
+supplementary Deseret letters are covered. It does not expand `ß` into `SS`,
+normalize composed/decomposed accents, or guess an OEM alias's code page.
+This is an explicit comparison policy, not a claim to reproduce every Windows
+version or locale's casing rules; FAT stores neither an upcase table nor its
+Unicode version. Characters without a mapping in this version remain unchanged.
+Reports preserve the original spelling and UTF-8 bytes.
+
+Short-alias validation reports `DIR_NAME` with the offending byte value, disk
+sector and byte offset, even when the entry has a valid LFN. It checks control
+bytes (except the escaped first byte `05`), leading spaces or malformed leading
+dots, and forbidden punctuation in all-ASCII aliases. These checks follow the
+name-field rules in the [Microsoft FAT specification, section 6.1](https://www.scs.stanford.edu/~zyedidia/docs/_other/fat.pdf).
+Inspection preserves every entry, and ownership-sensitive repairs refuse the
+damaged names. Lowercase ASCII is tolerated for compatibility. Punctuation in
+aliases containing OEM bytes is left undecided under the default unknown policy
+because DBCS trail bytes can share ASCII punctuation values. An explicit
+supported single-byte code page enables punctuation checks throughout each
+alias, even beneath a valid
+LFN. Code-page decoding does not weaken any repair ownership checks.
+
+`make -C src/magicdisk test-short-names DOS_BOOT="..." DOS_KERNEL=msdos622`
+checks invalid aliases beneath valid LFNs on FAT12/16/32 in QEMU, including
+precise byte findings, refused repair and unchanged media. Use `freedos` or
+`win98` for the other supported kernels. Native tests also cover legal aliases,
+escaped leading `05`, lowercase compatibility and undecoded OEM/DBCS bytes.
+
+The checked-in `namecase.h` needs no network access during a build. Regenerate
+it with `python3 tools/generate_namecase.py /path/to/UnicodeData-3.2.0.txt > namecase.h`
+from this directory; the generator verifies the source SHA-256 before emitting
+759 mappings. `oemcode.h` is reproducible with
+`python3 tools/generate_oemcode.py /path/to/UnicodeData-3.2.0.txt > oemcode.h`
+followed by `clang-format -i oemcode.h`; it verifies the same pinned source and
+emits CP437/CP850/CP852/CP860/CP866 decoding plus lowercase display tables.
+Unicode data's permission notice is in [UNICODE-LICENSE.txt](UNICODE-LICENSE.txt).
+`make -C src/magicdisk test-unicode DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) checks Unicode collisions, exact UTF-8 diagnostics,
+repair refusal without journal creation, and unchanged source disks in QEMU.
 
 LFN handling does not require DOS interrupt 21h long-filename services, which may
 be absent in real DOS mode. Existing marker and FSInfo repairs preserve directory
@@ -742,7 +1146,8 @@ MAGICDSK --drive D --restore-journal A:\MARK.MDJ --apply
 Replace the sample cluster with the value found on your own map. In this mode,
 sector numbers are relative to the selected volume; sector zero is its boot
 sector. `--partition` and `--list` do not apply to a drive letter. BIOS device
-selection still exposes MBR partitions directly, but remains read-only.
+selection exposes MBR partitions directly. The CLI and menus support guarded
+writes to unmounted IDE partitions.
 
 Mounted-volume inspection supports MS-DOS 6.22, FreeDOS and MS-DOS 7.1 in real
 DOS mode. QEMU checks cover MS-DOS 6.22 and FreeDOS 1.4 FAT12/FAT16 reads,
@@ -782,6 +1187,22 @@ its relocated directory entry. Independent BIOS reads verify every journaled
 sector, including unchanged sectors in newly allocated clusters. DOS free-space
 queries must decrease by the exact allocation and return to the original value
 after undo; the entire source volume must also match its original bytes.
+The `--relocate-native` variant first reads a live file through DOS to populate
+its caches, relocates the file's first cluster, then reads the payload again.
+It checks the one-cluster free-space decrease, every changed sector through
+independent BIOS reads, the complete relocation journal, and byte-for-byte
+restoration of the volume after undo. It covers mounted FAT12/FAT16 under
+MS-DOS 6.22 and FAT12/FAT16/FAT32 under FreeDOS and Windows 98 DOS.
+The `--relocate-directory` variant adds directory-head relocation to this same
+matrix, including child parent pointers, cached path traversal, TUI confirmation,
+and version-12 journal restoration. Native tests additionally relocate directory
+middle/tail clusters and undo every partial-commit prefix; fault injection checks
+source/destination read errors, stale plans, torn writes and sync failure.
+The `--relocate-root` variant tests the FAT32 root through the TUI on FreeDOS
+and Windows 98 DOS, including cached DOS file reads, independent BIOS sector
+checks and exact version-13 journal undo. Adding `--relocate-torn-undo` tests
+the explicit interrupted-write undo mode, including the backup-pointer update
+performed by the Windows 98 root-cache service.
 The `--shared-prefix` variant also makes the full directory point into an earlier
 owner's directory chain. It verifies shared-tail detachment and growth together.
 The `--empty-alias` variant repairs fully shared directory references, enters the
@@ -811,7 +1232,8 @@ image-based marker/FSInfo/backup boot repairs, and mounted FAT12/16/32 marker
 changes with BIOS retests and journal undo. Mounted FAT32 FAT-copy, FSInfo and backup boot repairs also pass independent
 BIOS scans and exact whole-volume undo. Mounted directory growth also passes on
 FAT12, FAT16 and FAT32.
-The BIOS backend remains read-only. Windows 95 and Windows desktop DOS windows
+Guarded BIOS repairs are described below.
+Windows 95 and Windows desktop DOS windows
 have not yet been separately verified.
 
 To repeat this test with your own licensed boot image:
@@ -873,27 +1295,405 @@ Zero dates are treated as unavailable legacy metadata, including a zero write
 date. Midnight is valid. MagicDisk does not infer chronological relationships
 between the fields or invent replacement timestamps. These findings do not block
 allocation repairs or lost-chain export because they do not change ownership;
-repair operations preserve the timestamp bytes. This follows the encoded field
+other repair operations preserve the timestamp bytes. This follows the encoded field
 ranges in section 6.3 of the Microsoft FAT specification linked above, with the
 explicit zero-date compatibility allowance described here.
 
+`MAGICDSK IMAGE.IMG --clear-invalid-timestamps` previews each invalid field
+that would become zero. Add `--apply --journal NEWFILE.MDJ` to commit, or use
+**Diagnose > Clear invalid timestamps** in the TUI and confirm with `CLEAR`.
+The original date/time cannot be inferred: zero dates mean unavailable, while
+zero time displays as midnight. Valid neighboring fields stay intact, including
+valid creation fractions; names, file contents and allocation do not change.
+
+This action requires readable, unambiguous ownership. Independent FSInfo and
+backup-boot findings may coexist. Its version-14 journal saves whole directory
+sectors and validates the original tree before undo, including partial commits.
+F6/F7 show/export the proposed field offsets and original values. The QEMU
+`--timestamps` check exercises CLI preview, TUI correction, clean scanning and
+exact undo under MS-DOS 6.22, FreeDOS and Windows 98 DOS; native tests cover
+FAT12/16/32 directories, dot entries, failure rollback and ownership guards.
+
+## Invalid DOS alias repair
+
+`MAGICDSK IMAGE.IMG --repair-short-names` previews replacement of invalid DOS
+8.3 aliases with collision-free `R0000001.CHK`-style recovery names. Add
+`--apply --journal NEW.MDJ` after reviewing the proposed names. In the TUI use
+**Diagnose > Repair invalid DOS names**, review the aliases and type `RENAME`.
+A `DIR_NAME` finding also offers **P** to open the volume-wide repair review.
+
+This changes the DOS alias; it does not reconstruct the original short name.
+Valid long-name text remains intact, with its checksum updated to match the
+new alias. File contents, directory children, dates, flags and allocation remain
+unchanged. Candidate names are checked against aliases and long names in the
+proposed filesystem, so existing names are never overwritten. Invalid LFN
+records, duplicate names and ambiguous ownership must be resolved first.
+
+The chosen OEM policy controls which short-name bytes can be proven invalid.
+Unknown DBCS punctuation is not guessed. Version-18 journals bind that policy
+so validated undo works in a later session using a different default code page.
+The preview records original alias bytes, replacement names and exact sector
+locations. Namespace validation checks each candidate against its directory, including
+planned aliases and valid LFNs. Complete ownership and proposed-volume scans
+run before approval; all preparation remains cancellable. Tests compare every
+changed byte and check independent FAT validation, partial/repeated undo,
+changed previews, forged journals and write-failure rollback. QEMU exercises
+the CLI/TUI and large batches on all three DOS versions, plus mounted-drive
+directory-cache lookup and exact payload/undo checks.
+
+## Invalid long-name cleanup
+
+`MAGICDSK IMAGE.IMG --clear-invalid-lfn` previews deletion of malformed or
+orphaned VFAT long-name slots. Add `--apply --journal NEW.MDJ` to apply the
+reviewed cleanup, or choose **Diagnose > Clear invalid long names** and type
+`CLEAR`. Findings for invalid LFNs also offer **P** to open this volume-wide
+repair review. F6/F7 inspect or export the proposed slot locations.
+
+This action discards invalid long names; it does not reconstruct their text.
+The associated DOS aliases, valid long names (including a valid group following
+an orphan prefix), file contents, dates and allocation remain unchanged. Only
+the first byte of each invalid LFN slot is marked deleted. The same ordinal,
+checksum, metadata, Unicode and padding checks drive diagnosis and cleanup.
+Readable, unambiguous ownership is required; unrelated live-tree damage must
+be resolved first. A scan of the proposed bytes must pass before approval.
+
+Version-17 journals retain complete original sectors. Repair recomputes the
+plan before writing; undo validates the original directory ownership and plan,
+including partially committed transactions. Native tests cover exact byte
+changes, valid-name preservation, partial/repeated undo, forged journals,
+cancellation, unreadable directories, torn writes and failed-flush rollback.
+QEMU tests exercise the CLI preview, TUI review/export/apply, clean rescan and
+exact journal undo across FAT12/16/32 under all three supported DOS kernels.
+
+## Orphan-directory contents
+
+`MAGICDSK IMAGE.IMG --recover-directories DESTINATION` searches allocated,
+unowned clusters for intact, self-consistent `.` and `..` directory entries.
+Use **Report > Find orphan directories** for the same operation in the TUI.
+This can export surviving contents even when the parent directory alias is gone.
+Live-owned clusters are excluded, and readable, unambiguous live ownership is
+required before discovery. The source remains unchanged; no directory is
+reattached and no allocation is repaired.
+
+The new `RECxxxxx/RECOVERY.TXT` records the raw dot-pair evidence, cluster
+locations, candidate names and payload gaps. All exports remain **UNVERIFIED**:
+stale directory contents may describe reused data. Intact dot pairs are required
+for discovery; directories without them may only be recoverable as raw lost
+chains. Unreadable search sectors are retried three times, recorded as
+`ORPHAN_SEARCH_GAP`, and leave the export incomplete. Cancellation retains
+partial output for inspection.
+
+## Deleted-file candidates
+
+`MAGICDSK IMAGE.IMG --recover-deleted DESTINATION` exports deleted-file
+candidates to a new `RECxxxxx` directory. In the TUI, use **Report > Recover
+deleted files**. The destination must be separate from a mounted source volume;
+images are opened read-only. This action does not restore directory entries or
+mark their clusters allocated.
+
+The search starts with deleted short entries in readable, live directory trees.
+It follows surviving unowned FAT links where available. When the starting FAT
+entry is free, it guesses consecutive free clusters up to the saved file size,
+stopping at an allocated cluster. It never skips an occupied cluster to guess a
+fragmented continuation. Live-owned clusters, bad/reserved allocations, loops,
+invalid starts and short surviving chains stop export, with the reason and
+missing byte count recorded. Zero-length candidates produce empty files.
+
+Every candidate is **unverified**, even if its exported length matches the old
+size: freed data may have been overwritten and surviving links may be stale.
+The CLI returns 1 when candidates need review, 0 when none were found, and 2
+for incomplete/failed operations. Files are numbered portable `.CHK` parts;
+`RECOVERY.TXT` records source sector offsets, original 32-byte entries, parent
+UTF-8 paths or source-directory identifiers, `CONTIGUOUS_GUESS` versus
+`RETAINED_UNOWNED_CHAIN`, and exact output
+ranges. Deleted LFN slots are retained as raw evidence. Adjacent runs of up to 20 slots
+also yield an inferred `NAME_CANDIDATE` when attributes, type, cluster words,
+checksums, name length, UTF-16 surrogate pairs and terminator padding agree.
+Physical order supplies the erased ordinals; the checksum must identify one
+legal missing first alias byte, recorded as `short_first_hex`. `name_hex` holds
+UTF-8, including supplementary characters. A candidate remains **unverified**:
+checksum compatibility cannot establish that stale slots belong together or
+that their data survived. Invalid groups retain raw evidence without a decoded
+name. Runs cross sector/cluster boundaries but do not cross directory boundaries.
+Deleted subdirectories are queued after excluding live-owned starts. Their first
+sector must contain matching self/parent dot pointers (the name lead bytes may
+be deleted), directory attributes and zero dot sizes. A retained unowned chain
+may also be exported when exactly one dot slot is entirely zero and the other
+dot entry matches. `DIRECTORY_DOT_EVIDENCE` preserves both raw slots and marks
+this evidence unverified; neither missing slot is interpreted as an end marker.
+Conflicting pointers, two erased slots, and missing dots in free-cluster guesses
+still stop traversal. Traversal follows retained
+unowned chains or explicitly guessed consecutive free clusters, and stops on
+end markers, chain ends, revisited directory clusters, allocation conflicts,
+unreadable metadata or malformed records. It can export both deleted and
+surviving child entries from these unverified trees, including intact or erased
+LFN ordinals. `DIRECTORY_CANDIDATE`, `DIRECTORY_BEGIN` and `DIRECTORY_END` records
+connect child files to their source directory entry and explain skipped paths.
+Deleted-directory metadata reads now make up to three attempts, with cancellation
+between attempts. `DIRECTORY_RETRY` records the absolute disk LBA, attempt count
+and final readability after an initial failure. A transient failure can recover
+on a later attempt without losing the directory; persistent unreadable dot
+metadata still stops that candidate. Persistent failure while reading entries
+retains partial output with an `INCOMPLETE` manifest. Metadata bytes are never
+invented or zero-filled to continue parsing.
+Dot entries are never exported as files or followed as child directories.
+A wrong-parent alias does not prevent a later matching reference from being
+examined. No directory entries or allocation links are restored on the source.
+
+Payload reads have the same bounded retries and explicitly recorded zero-filled
+gaps as live/lost export. Cancellation and output failures retain partial files
+with an `INCOMPLETE` manifest. Native tests cover FAT12/16/32, partition offsets,
+LFN evidence and inferred names, stale entries, live-data exclusion, read faults and unchanged source
+images. The QEMU `--deleted-recovery` and `--deleted-directories` tests exercise file and
+nested-directory export through the TUI under each DOS kernel.
+
+## DOS-to-BIOS inventory
+
+`MAGICDSK --dos-map` displays the logical letters and physical BIOS IDs reported
+by the DOS kernel's drive-data table. It supports the tested real-mode kernels:
+MS-DOS 6.22, Windows 98 DOS 7.1 and FreeDOS. This distinguishes cloned volumes
+with identical boot sectors and serial numbers, and shows when multiple letters
+refer to one BIOS disk. It does not read disk sectors or modify the table.
+
+The implementation uses the six-byte prefix of the
+[INT 2Fh/0803h drive-data table](https://fd.lod.bz/rbil/interrup/dos_kernel/2f0803.html),
+also present in the [FreeDOS device definitions](https://github.com/FDOS/kernel/blob/master/hdr/device.h).
+It bounds memory reads and traversal length, rejects cycles and duplicate logical
+letters, and publishes no partial inventory when a query fails. Unlisted letters
+remain unknown: hidden partitions, substituted letters, and third-party drivers
+must not be inferred absent or safe from this inventory. It does not authorize
+BIOS writes or establish cache, locking, or journal-destination safety.
+
+`make -C src/magicdisk test-dos-map DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) tests the production command in QEMU against cloned
+primary/logical volumes, shared floppy letters, hidden partitions, and FAT32
+visibility. The host compares target bytes after every boot and hash-checks the
+original boot image/archive. With `--exports`, the Python test also exports
+files from BIOS-selected normal, hidden and FAT32 partitions, verifies exact
+payloads, and checks refusal of same-disk and unknown destinations for live,
+deleted and lost-file recovery. This includes FAT32 source reads under MS-DOS
+6.22, which does not mount FAT32 itself. The make target and both compatibility
+targets include these export checks and a screen-driven live-export menu test
+that verifies payload bytes and destination refusal. BIOS report export uses the same physical
+destination guard.
+
+## BIOS write preflight
+
+The internal `dt_dos_bios_write_check` is a prerequisite, not a write enable.
+It rejects floppy IDs and any BIOS disk referenced by the DOS drive-data table,
+requires a journal path on a different known local physical disk, and queries
+all 26 DOS letters. Only an explicit invalid-drive result establishes an absent
+letter; unsupported calls and unknown local devices cause refusal. Known DDT
+entries are checked without canonicalizing the shared B: floppy alias, avoiding
+an interactive media-change prompt. Unknown local letters must resolve to a
+known, different device. This does not replace cache management or locking.
+
+`make -C src/magicdisk test-bios-preflight DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) uses the read-only `BIOSCHK.EXE` probe against normal,
+hidden and FAT32 partitions. It checks refusal of mounted source disks, floppy
+IDs, invalid IDs and unknown journal destinations, and verifies that production
+BIOS access initially has no write callback. The journal integration helper also
+requires this preflight before enabling its test-only write range.
+
+An optional `DOS_RAMDRIVE="/path/to/RAMDRIVE.SYS"` runs an additional unknown-local-
+device refusal test. Supply a driver compatible with the selected DOS kernel;
+no proprietary driver is bundled. This case was verified with the MS-DOS 6.22
+driver and kernel. The test first proves the RAM disk is available, then requires
+preflight refusal despite the RAM disk's absence from the BIOS inventory.
+
+The write preflight also queries the
+[SMARTDRV 4.x+ installation interface](https://fd.lod.bz/rbil/interrup/caches/2f4a10bx0000.html)
+with its DoubleSpace-compatible signature. A SMARTDRV-compatible or NWCACHE
+signature causes refusal, including when write-behind is disabled. Query errors
+and unrecognized replies also cause refusal. It does not issue a cache-disable
+or explicit cache-flush subfunction. This check is not a detector for every DOS
+cache or TSR; a clean boot without disk caches or disk TSRs is required for
+BIOS writes.
+
+`make -C src/magicdisk test-bios-cache DOS_BOOT="..." DOS_SMARTDRV="..." DOS_HIMEM="..."`
+uses user-owned MS-DOS 6.22 SMARTDRV.EXE and HIMEM.SYS files in disposable QEMU
+boots. It tests both `/X` and default write-behind modes. The test requires the
+resident-cache refusal response from both preflight and the production CLI,
+and compares the source disk byte for byte. These
+optional proprietary files are not bundled. Clean-boot preflight tests remain
+part of the compatibility suites for all three supported DOS kernels.
+
+## BIOS writes and tests
+
+The CLI can repair an unmounted IDE partition using `--bios ID --partition N`,
+`--apply`, and a journal on a different known local IDE disk. Run from a clean
+DOS boot without disk caches or disk TSRs. The entire source physical disk must
+be unmounted, including every other partition. Mounted source disks, unknown
+local devices, unsuitable journal destinations and unsupported controllers are
+refused before enabling writes. In the TUI, select **Disk > BIOS device**, then
+use the Diagnose repair or journal-restore menus. The requirements dialog must
+be accepted before preflight; Esc cancels without writing. Each operation
+reopens the selected disk read-only afterward, including failures.
+
+```
+MAGICDSK --bios 81 --partition 1 --mark-bad 1000 --apply --journal C:\MARK.MDJ
+MAGICDSK --bios 81 --partition 1 --restore-journal C:\MARK.MDJ --apply
+```
+
+Opening a BIOS disk starts read-only. The explicit write enable validates
+the preflight and ATA flush support, then bounds writes to the selected volume.
+`make -C src/magicdisk test-bios-cli DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) tests the production executable, including journal
+undo, injected write/flush failures, torn-write recovery and unsupported
+controller refusal. FAT12/16/32 cases passed on all three kernels in QEMU.
+
+`make -C src/magicdisk test-bios-ui DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) drives the production menus with BIOS keystrokes.
+It checks cancel, mark, unmark, bad-sector retest, both journal undos, invalid
+destinations and mounted source refusal, comparing complete disk bytes after
+each QEMU shutdown. The keyboard helper performs no DOS calls or disk writes
+in its timer handler.
+
+A separate `BIOSWRT.EXE` test
+helper compiles `bios.c` with `MAGICDISK_BIOS_TEST_WRITES`; its write-enabling
+entry point is absent from the normal executable. It accepts only signed,
+disposable B:/BIOS-81h media and a bounded nonzero sector range. The shared
+transfer code uses CHS AH=03h or extended AH=43h, copies write data into the
+aligned conventional-memory buffer, and does not retry an uncertain write.
+
+`make -C src/magicdisk test-bios-writes DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) runs separate QEMU write, restore, and failure boots.
+The host compares complete media bytes after each shutdown, including unchanged
+sectors outside the requested ranges. Cases cover floppy track boundaries,
+hard-disk CHS cylinder boundaries, EDD final sectors, out-of-range and overflow
+requests, write-protected floppy media, and injected IDE write errors. The
+[QEMU blkdebug facility](https://www.qemu.org/docs/master/devel/testing/blkdebug.html)
+injects write-only EIO errors so reads remain available for verification.
+Original boot images/archives are hash-checked and never modified.
+
+`make -C src/magicdisk test-bios-journal DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) exercises the journal engine through a separate
+`BIOSJNL.EXE` helper. It marks a free cluster on signed, hidden FAT12/16/32
+partitions, verifies journal before/after images and exact disk bytes, restores
+the original volume, and injects a write failure in the second FAT to check
+rollback. A separate one-shot `flush_to_disk` error verifies rollback after an
+ATA flush failure. A journal-disk flush failure must stop the operation before
+any source write. It also checks strict refusal of a mixed sector, explicit torn-write
+recovery, and repeated undo. FAT12 uses CHS; FAT16/32 use EDD. The journal lives
+on the separate disposable DOS system disk. Both BIOS suites are included in
+`test-compat` and `test-win98`.
+
+The BIOS synchronization callback issues ATA `FLUSH CACHE` (E7h).
+It obtains ports and master/slave selection from a checksummed revision-1.1
+EDD parameter table, accepts only the two legacy IDE port pairs, and refuses
+removable/ATAPI devices or invalid mappings. It never guesses the channel from
+the BIOS disk number. `IDENTIFY DEVICE` must advertise flush support and report
+the same capacity as the BIOS. Command errors and bounded-wait failures return
+failure to the journal engine; there is no reset/read-back fallback. Device
+selection is restored only when the controller is idle.
+
+The journal engine has an optional `sync_journal` callback after committing and
+closing the journal file and committing its directory. The BIOS
+backend rechecks the unmounted-source preflight, resolves the journal's physical
+disk, flushes DOS buffers, and issues ATA FLUSH CACHE to that different disk.
+A failed barrier retains the journal but aborts before the first source write;
+there is no fallback to weaker synchronization. The normal image and mounted-DOS
+backends retain their existing commit behavior. A native fault test counts zero
+source writes on barrier failure and checks the complete journal is visible to
+the callback. QEMU tests inject independent flush failures on the journal and
+source backends, including when the two disks share an IDE channel.
+
+The mapping follows the [Phoenix EDD 1.1 specification](https://wiki.sensi.org/download/doc/ata_edd_11.pdf).
+The tests use [QEMU's ATA command implementation](https://github.com/qemu/qemu/blob/master/hw/ide/core.c)
+and block-layer flush fault injection. `test_bios_journal.py --ata-target`
+accepts `secondary-master` (default), `primary-slave`, and `secondary-slave`.
+The shared-primary-channel case checks that journal access still works while
+source transfers and flushes select the other device.
+
+These tests establish command and journal behavior in QEMU, not power-loss
+validation on real hardware. Support is limited to the verified legacy IDE
+port pairs and devices advertising ATA flush support. Other controllers are
+refused; broader hardware and cache compatibility remain future work.
+
 ## Remaining work
 
-- Writes to BIOS-only/unmounted volumes; broader DOS and hardware compatibility.
+- Broader DOS and hardware compatibility for BIOS repairs.
 - Recovery of torn sectors containing bytes absent from both journal images or with unresolvable boot identity.
 - Reconstruction of missing/unreadable directory contents, unresolved ownership, and broader directory recovery.
-- Non-ASCII case-equivalence checks, timestamp correction, and richer findings.
-- Deleted-file recovery and extended hardware/emulator compatibility coverage.
+- Additional OEM code pages, DBCS decoding, locale-specific case-equivalence checks and richer findings.
+- Reconstruction of deleted directories with both dot entries missing or conflicting dot metadata, incomplete deleted LFN groups, fragmented files whose FAT links were cleared, and extended hardware/emulator compatibility coverage.
 
 Current limits: 512-byte sectors; MBR rather than GPT. BIOS access supports CHS
-and extended LBA reads. The DOS C runtime image backend currently supports
-offsets through 2 GiB minus one;
-larger reads fail explicitly. The native test backend supports large-file offsets.
+and extended LBA reads. The DOS image backend supports sector-aligned files below 4 GiB (at most
+4 GiB minus 512 bytes), subject to the host filesystem and DOS kernel. Windows
+98 DOS and FreeDOS can host these images on FAT32; MS-DOS 6.22 still requires
+an image that fits its supported host filesystem. The native backend supports
+images through 2 TiB minus 512 bytes.
 A successful scan describes implemented checks only; it does not certify every
 filesystem invariant or guarantee the absence of future media failures. FAT
 mirror comparisons include padding bytes, and backup comparisons include the
 complete boot sector. DOS journal commits use DOS 3.3+
 [INT 21h/AH=68h](https://fd.lod.bz/rbil/interrup/dos_kernel/2168.html).
+
+## Numeric input
+
+Sector, cluster, partition and FAT-copy numbers use unsigned decimal digits.
+BIOS drive numbers use hexadecimal, with an optional `0x` prefix. The sector
+viewer's Go command accepts decimal or explicitly `0x`-prefixed hexadecimal.
+Leading zeros are allowed; signs, spaces, incomplete prefixes, trailing text
+and values above 4294967295 are rejected. Each operation additionally checks
+its own valid range before accessing the requested location. A rejected viewer
+input keeps the selected sector unchanged. This grammar is identical on 32-bit
+DOS and native hosts, avoiding signed-to-unsigned `strtoul` conversions.
+
+Native tests cover every numeric command-line option and parser boundaries.
+The QEMU display test also checks malformed marker arguments before source
+I/O and viewer navigation at the last supported sector on all three kernels.
+
+## Map size labels and sector ranges
+
+The volume header and selected map block show rounded binary sizes in B, KiB,
+MiB, GiB or TiB; a single 512-byte sector displays `512 B`. Exact disk LBA
+ranges remain separate from these rounded labels. Map controls occupy their
+own line so ten-digit sector numbers do not push the shortcuts off-screen.
+Surface maps show the allocation-map shortcut instead of advertising zoom.
+
+`make -C src/magicdisk test-display DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) checks the displayed text, single-cluster zoom,
+sector viewer and surface/allocation transitions near the end of a sparse
+2-TiB-minus-512-byte BIOS disk. The test compares the partition and MBR bytes
+afterward; the display and inspection operations leave them unchanged.
+
+## Large image files in DOS
+
+Image I/O uses unsigned DOS file positions rather than signed C `long` positions.
+The backend opens existing files with the DOS extended-size flag, verifies each
+seek result, and uses bounded relative seeks for nearby sectors. Longer seeks
+split positions above 2 GiB into positive displacements. File paths for extended open are transferred through DPMI-owned conventional memory.
+It rejects device handles and never creates or grows an image. Reads and writes
+outside the size recorded at open are refused on both native and DOS backends.
+Writable DOS handles retain deny-read/write sharing; native writes retain their
+exclusive advisory lock. Journals continue to use exclusive creation and commit.
+The DOS calls are documented in [extended open](https://fd.lod.bz/rbil/interrup/dos_kernel/216c00.html)
+and [file seek](https://fd.lod.bz/rbil/interrup/dos_kernel/2142.html).
+
+`make -C src/magicdisk test-image-io DOS_BOOT="..." DOS_KERNEL=win98`
+(also `freedos` or `msdos622`) tests real file I/O in QEMU. Windows 98 DOS and
+FreeDOS tests use a sparse FAT32 carrier with a 4-GiB-minus-512-byte image,
+check exact writes around 2 GiB and the last sector, commits/reopen, unchanged
+FAT chains and rejected extension. A production MagicDisk repair and journal
+undo operate on a nested partition above 2 GiB. MS-DOS 6.22 runs the small-file
+case; its kernel does not mount FAT32. The normal DOS compatibility tests cover
+image marker/retest/unmark/undo and the existing workspace flows on all three
+kernels. Native sparse-file tests reach 2 TiB minus 512 bytes.
+
+## FAT mutation bounds
+
+The shared repair-plan FAT setter rejects reserved header indices, clusters
+outside the volume, entries extending beyond the FAT, invalid copy numbers,
+inactive copies when mirroring is disabled, and values wider than the FAT
+format. These checks run before sector reads or patch changes. Reserved header
+repairs use their dedicated validated plan. Valid updates retain adjacent
+FAT12 nibbles and the FAT32 upper reserved bits.
+
+`make -C src/magicdisk test-plan-bounds DOS_BOOT="..." DOS_KERNEL=msdos622`
+(also `freedos` or `win98`) runs the same production setter against synthetic
+boundary cases in QEMU. The native suite includes these checks as well.
 
 ## Tests
 

@@ -74,6 +74,17 @@ int main(int argc, char **argv)
     word(image + 19, 2880);
     word(image + 22, 9);
     word(image + 510, 0xaa55);
+    image[21] = 0xf0;
+    {
+        unsigned fat_copy;
+
+        for (fat_copy = 0; fat_copy < 2; fat_copy++) {
+            unsigned char *header = image + (1 + fat_copy * 9) * 512;
+
+            header[0] = 0xf0;
+            header[1] = header[2] = 0xff;
+        }
+    }
     for (copy = 0; copy < 2; copy++) {
         unsigned offset = (1 + copy * 9) * 512 + 511;
 

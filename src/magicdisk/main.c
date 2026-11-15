@@ -2,7 +2,6 @@
 #include "disk.h"
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #ifdef __WATCOMC__
 #include <io.h>
 #endif
@@ -47,9 +46,12 @@ static void usage(void)
          "       MAGICDSK --bios HEX [options]    Inspect a BIOS device\n"
          "       MAGICDSK --drive LETTER [options] Inspect/repair a mounted DOS volume\n"
          "       MAGICDSK --devices               List BIOS-reported devices\n"
+         "       MAGICDSK --dos-map               Show DOS-to-BIOS drive inventory\n"
          "Options: --list | --partition N | --surface | --retest-bad\n"
+         "         --code-page 0|437|850|852|860|866 (0 keeps unknown OEM bytes escaped)\n"
          "         --mark-bad CLUSTER | --unmark-bad CLUSTER\n"
          "         --mark-sector DISK_LBA | --unmark-sector DISK_LBA\n"
+         "         --repair-fat-headers           Rebuild reserved FAT entries only\n"
          "         --repair-fsinfo                Rebuild FAT32 free-space metadata\n"
          "         --repair-boot-backup           Copy primary FAT32 boot sector to backup\n"
          "         --repair-boot-primary          Restore primary FAT32 boot from backup\n"
@@ -57,19 +59,29 @@ static void usage(void)
          "         --repair-fat SOURCE           Rebuild FAT copies from source 1, 2, ...\n"
          "         --fat-source N                Explicit authority for --repair-tree\n"
          "         --repair-tree                 Repair file/directory chains and dot entries\n"
+         "         --repair-labels               Remove duplicate/misplaced labels (preview)\n"
+         "         --repair-short-names          Replace invalid DOS aliases (preview)\n"
+         "         --clear-invalid-lfn           Remove invalid long-name records (preview)\n"
+         "         --clear-invalid-timestamps    Clear invalid date/time fields (preview)\n"
          "         --repair-directory-entries    Correct dot entries/directory sizes (preview)\n"
          "         --repair-directories          Repair directory loops/endings (preview)\n"
          "         --repair-files                Repair file chains and lengths (preview)\n"
          "         --reclaim-lost                Free unowned allocation (recover data first)\n"
          "         --export-files DIRECTORY      Export live files before repairs\n"
+         "         --export-cluster N DIRECTORY  Export the file owning cluster N\n"
+         "         --recover-directories DIRECTORY  Export orphan-directory contents\n"
+         "         --recover-deleted DIRECTORY   Export unverified deleted-file candidates\n"
          "         --recover-lost DIRECTORY      Export lost chains to a separate location\n"
          "         --apply --journal NEWFILE     Apply a previewed repair\n"
          "         --restore-journal FILE --apply  Restore journal sectors\n"
          "         --accept-torn                 Accept only saved before/after byte mixtures\n"
          "Repair writes support images and MS-DOS 6.22/7.1/FreeDOS --drive volumes.\n"
-         "BIOS device access is read-only.\n"
+         "BIOS writes require --partition N, an unmounted IDE disk and a separate IDE journal "
+         "disk.\n"
+         "Boot clean DOS without disk caches or disk-writing TSRs before BIOS repairs.\n"
          "BIOS device: 00=A, 01=B, 80=first hard disk. Partition N starts at 1.\n"
          "--relocate-cluster N copies readable file data and marks the source bad.\n"
+         "--salvage-cluster N also permits ZERO-filled unreadable file sectors.\n"
          "All inspection and surface operations are read-only.");
 }
 
@@ -80,17 +92,25 @@ enum {
     OP_UNMARK,
     OP_RESTORE,
     OP_FSINFO,
+    OP_FAT_HEADERS,
     OP_BOOT_BACKUP,
     OP_MIRROR,
     OP_RECOVER,
     OP_EXPORT_FILES,
+    OP_DELETED,
+    OP_ORPHAN_DIR,
     OP_RECLAIM,
     OP_CHAINS,
     OP_DIRECTORIES,
     OP_BOOT_PRIMARY,
     OP_TREE,
     OP_ENTRIES,
-    OP_RELOCATE
+    OP_TIMESTAMPS,
+    OP_LFN,
+    OP_ALIASES,
+    OP_LABELS,
+    OP_RELOCATE,
+    OP_SALVAGE
 };
 
 static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, int apply,
@@ -105,12 +125,13 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
     if (op == OP_RETEST) {
         dt_bad_retest(v, &retest, report, NULL, NULL, NULL);
         printf("Bad-cluster retest %s: %lu marked, %lu readable, %lu still failing, "
-               "%lu sectors read. Markers unchanged.\n",
+               "%lu sectors attempted, %lu failed. Markers unchanged.\n",
                retest.complete ? "complete" : "INCOMPLETE",
                (unsigned long)retest.marked,
                (unsigned long)retest.readable,
                (unsigned long)retest.failed,
-               (unsigned long)retest.tested_sectors);
+               (unsigned long)retest.tested_sectors,
+               (unsigned long)retest.failed_sectors);
         return !retest.complete ? 2 : (retest.failed ? 1 : 0);
     }
     if (op == OP_RESTORE) {
@@ -127,8 +148,12 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
         puts("Insufficient memory for repair plan");
         return 2;
     }
-    if (op == OP_RELOCATE)
+    if (op == OP_SALVAGE)
+        ok = dt_salvage_plan(v, cluster, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_RELOCATE)
         ok = dt_relocate_plan(v, cluster, plan, NULL, NULL, err);
+    else if (op == OP_FAT_HEADERS)
+        ok = dt_fat_header_plan(v, plan, NULL, NULL, err);
     else if (op == OP_FSINFO)
         ok = dt_fsinfo_plan(v, plan, NULL, NULL, err);
     else if (op == OP_BOOT_BACKUP)
@@ -139,6 +164,14 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
         ok = dt_tree_source_plan_ex(v, source, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_TREE)
         ok = dt_tree_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_LABELS)
+        ok = dt_label_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_ALIASES)
+        ok = dt_alias_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_LFN)
+        ok = dt_lfn_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_TIMESTAMPS)
+        ok = dt_timestamp_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_ENTRIES)
         ok = dt_entry_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_DIRECTORIES)
@@ -157,10 +190,26 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
             dt_plan_free(plan);
             return 0;
         }
-        if (op == OP_RELOCATE) {
-            printf("Relocate file cluster %lu and mark its original allocation bad; %u journaled "
+        if (op == OP_SALVAGE) {
+            unsigned sector, gaps = 0;
+
+            for (sector = 0; sector < v->spc; sector++) {
+                if (plan->gaps[sector / 8] & (1u << (sector % 8)))
+                    gaps++;
+            }
+            printf("Salvage file cluster %lu: %u unreadable sectors become ZERO (%lu bytes).\n",
+                   (unsigned long)cluster,
+                   gaps,
+                   (unsigned long)gaps * 512);
+            puts("Readable bytes, name and size are preserved; original cluster is marked bad.");
+            puts("Missing bytes are NOT recovered. Export needed data before applying.");
+        } else if (op == OP_RELOCATE) {
+            printf("Relocate cluster %lu and mark its original allocation bad; %u journaled "
                    "sectors.\n",
                    (unsigned long)cluster,
+                   plan->count);
+        } else if (op == OP_FAT_HEADERS) {
+            printf("Rebuild reserved FAT headers; %u metadata sectors. Status bits retained.\n",
                    plan->count);
         } else if (op == OP_FSINFO) {
             printf("Rebuild FAT32 FSInfo; %u metadata sectors.\n", plan->count);
@@ -187,6 +236,27 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
             puts("Leading entries may move within the directory; LFN groups remain intact.");
             puts("Full directories may gain free clusters; original free bytes are journaled.");
             puts("Correct dot order/duplicates; rebuild missing dots with unset timestamps.");
+        } else if (op == OP_LABELS) {
+            printf("Remove %lu duplicate/misplaced labels; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Keep the first root label; entries with cluster pointers or sizes are refused.");
+        } else if (op == OP_ALIASES) {
+            printf("Replace %lu invalid DOS aliases; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Recovery names replace invalid aliases; valid LFNs and file contents stay "
+                 "intact.");
+        } else if (op == OP_LFN) {
+            printf("Delete %lu invalid LFN records; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Invalid long names are lost; DOS aliases, valid names and contents stay intact.");
+        } else if (op == OP_TIMESTAMPS) {
+            printf("Clear %lu invalid timestamp fields; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Invalid fields become zero; valid fields, names and file data stay intact.");
         } else if (op == OP_ENTRIES) {
             printf("Repair entries in %lu directories; %u metadata sectors.\n",
                    (unsigned long)plan->cluster,
@@ -244,6 +314,18 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
     return ok ? 0 : 2;
 }
 
+static int select_codepage(const char *value)
+{
+    dt_u32 codepage;
+
+    if (!dt_parse_u32(value, 10, &codepage) ||
+        (codepage > 65535 || !dt_set_oem_codepage((unsigned)codepage))) {
+        puts("Code page must be 0 (unknown), 437, 850, 852, 860 or 866");
+        return 0;
+    }
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     DtDisk disk;
@@ -252,13 +334,19 @@ int main(int argc, char **argv)
     DtResult result;
     DtMap map;
     unsigned count = 0, i, index = 0, drive = 0, boot_source = 0, fat_source = 0;
-    char err[160], *end;
+    char err[160];
     int listing = 0, bios = 0, surface = 0, arg = 2, status;
     int op = OP_SCAN, apply = 0, sector_arg = 0, torn = 0;
     dt_u32 cluster = 0;
     const char *journal = NULL, *destination = NULL;
     dt_u32 start = 0, size, failures = 0;
 
+    while (argc > 1 && !strcmp(argv[1], "--code-page")) {
+        if (argc < 3 || !select_codepage(argv[2]))
+            return 2;
+        memmove(argv + 1, argv + 3, (argc - 2) * sizeof(*argv));
+        argc -= 2;
+    }
     if (argc == 1)
         return dt_ui(NULL);
     if (!strcmp(argv[1], "--tui") && argc <= 3)
@@ -268,6 +356,26 @@ int main(int argc, char **argv)
         return 0;
     }
     puts("MagicDisk 0.3 - DOS disk diagnostics");
+    if (!strcmp(argv[1], "--dos-map")) {
+        unsigned drives[26];
+
+        if (argc != 2) {
+            usage();
+            return 2;
+        }
+        if (!dt_dos_bios_map(drives, err)) {
+            puts(err);
+            return 2;
+        }
+        puts("DOS  BIOS device (kernel drive-data table)");
+        for (i = 0; i < 26; i++) {
+            if (drives[i] != DT_BIOS_UNKNOWN)
+                printf("%c:   %02Xh\n", 'A' + i, drives[i]);
+        }
+        puts("Unlisted letters are unknown, including aliases and third-party drivers.");
+        puts("This inventory does not authorize raw BIOS writes.");
+        return 0;
+    }
     if (!strcmp(argv[1], "--devices")) {
         unsigned drives[DT_BIOS_MAX];
 
@@ -290,13 +398,12 @@ int main(int argc, char **argv)
         return 0;
     }
     if (!strcmp(argv[1], "--bios")) {
-        unsigned long value;
+        dt_u32 value;
         if (argc < 3) {
             usage();
             return 2;
         }
-        value = strtoul(argv[2], &end, 16);
-        if (!*argv[2] || *end || value > 255) {
+        if (!dt_parse_u32(argv[2], 16, &value) || value > 255) {
             puts("Invalid BIOS drive number");
             return 2;
         }
@@ -324,6 +431,9 @@ int main(int argc, char **argv)
     while (arg < argc) {
         if (!strcmp(argv[arg], "--list")) {
             listing = 1;
+        } else if (!strcmp(argv[arg], "--code-page") && arg + 1 < argc) {
+            if (!select_codepage(argv[++arg]))
+                return 2;
         } else if (!strcmp(argv[arg], "--surface")) {
             surface = 1;
         } else if (!strcmp(argv[arg], "--accept-torn")) {
@@ -332,6 +442,22 @@ int main(int argc, char **argv)
             apply = 1;
         } else if (!strcmp(argv[arg], "--journal") && arg + 1 < argc) {
             journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--recover-directories") && arg + 1 < argc && op == OP_SCAN) {
+            op = OP_ORPHAN_DIR;
+            destination = argv[++arg];
+        } else if (!strcmp(argv[arg], "--recover-deleted") && arg + 1 < argc && op == OP_SCAN) {
+            op = OP_DELETED;
+            destination = argv[++arg];
+        } else if (!strcmp(argv[arg], "--export-cluster") && op == OP_SCAN && arg + 2 < argc) {
+            dt_u32 n;
+
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n < 2 || n > 0xfffffffeUL) {
+                puts("Invalid file cluster number");
+                return 2;
+            }
+            cluster = (dt_u32)n;
+            op = OP_EXPORT_FILES;
+            destination = argv[++arg];
         } else if (!strcmp(argv[arg], "--export-files") && op == OP_SCAN && arg + 1 < argc) {
             op = OP_EXPORT_FILES;
             destination = argv[++arg];
@@ -340,6 +466,8 @@ int main(int argc, char **argv)
             destination = argv[++arg];
         } else if (!strcmp(argv[arg], "--retest-bad") && op == OP_SCAN) {
             op = OP_RETEST;
+        } else if (!strcmp(argv[arg], "--repair-fat-headers") && op == OP_SCAN) {
+            op = OP_FAT_HEADERS;
         } else if (!strcmp(argv[arg], "--repair-fsinfo") && op == OP_SCAN) {
             op = OP_FSINFO;
         } else if (!strcmp(argv[arg], "--repair-boot-backup") && op == OP_SCAN) {
@@ -347,16 +475,22 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[arg], "--repair-boot-primary") && op == OP_SCAN) {
             op = OP_BOOT_PRIMARY;
         } else if (!strcmp(argv[arg], "--boot-source") && arg + 1 < argc) {
-            unsigned long n;
-            errno = 0;
-            n = strtoul(argv[++arg], &end, 10);
-            if (!*argv[arg] || *end || errno || n < 1 || n > 65534) {
+            dt_u32 n;
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n < 1 || n > 65534) {
                 puts("Backup sector must be numbered from 1 through 65534");
                 return 2;
             }
             boot_source = (unsigned)n;
         } else if (!strcmp(argv[arg], "--repair-tree") && op == OP_SCAN) {
             op = OP_TREE;
+        } else if (!strcmp(argv[arg], "--repair-labels") && op == OP_SCAN) {
+            op = OP_LABELS;
+        } else if (!strcmp(argv[arg], "--repair-short-names") && op == OP_SCAN) {
+            op = OP_ALIASES;
+        } else if (!strcmp(argv[arg], "--clear-invalid-lfn") && op == OP_SCAN) {
+            op = OP_LFN;
+        } else if (!strcmp(argv[arg], "--clear-invalid-timestamps") && op == OP_SCAN) {
+            op = OP_TIMESTAMPS;
         } else if (!strcmp(argv[arg], "--repair-directory-entries") && op == OP_SCAN) {
             op = OP_ENTRIES;
         } else if (!strcmp(argv[arg], "--repair-directories") && op == OP_SCAN) {
@@ -366,33 +500,35 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[arg], "--reclaim-lost") && op == OP_SCAN) {
             op = OP_RECLAIM;
         } else if (!strcmp(argv[arg], "--fat-source") && arg + 1 < argc) {
-            unsigned long n = strtoul(argv[++arg], &end, 10);
-            if (!*argv[arg] || *end || n < 1 || n > 4) {
+            dt_u32 n;
+
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n < 1 || n > 4) {
                 puts("Source FAT must be numbered from 1 through 4");
                 return 2;
             }
             fat_source = (unsigned)n;
         } else if (!strcmp(argv[arg], "--repair-fat") && op == OP_SCAN && arg + 1 < argc) {
-            unsigned long n = strtoul(argv[++arg], &end, 10);
-            if (!*argv[arg] || *end || n < 1 || n > 4) {
+            dt_u32 n;
+
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n < 1 || n > 4) {
                 puts("Source FAT must be numbered from 1 through 4");
                 return 2;
             }
             op = OP_MIRROR;
             cluster = (dt_u32)n;
-        } else if ((!strcmp(argv[arg], "--relocate-cluster") || !strcmp(argv[arg], "--mark-bad") ||
+        } else if ((!strcmp(argv[arg], "--salvage-cluster") ||
+                    !strcmp(argv[arg], "--relocate-cluster") || !strcmp(argv[arg], "--mark-bad") ||
                     !strcmp(argv[arg], "--unmark-bad") || !strcmp(argv[arg], "--mark-sector") ||
                     !strcmp(argv[arg], "--unmark-sector")) &&
                    op == OP_SCAN && arg + 1 < argc) {
-            unsigned long n;
+            dt_u32 n;
             sector_arg = strstr(argv[arg], "-sector") != NULL;
-            op = !strcmp(argv[arg], "--relocate-cluster") ? OP_RELOCATE
+            op = !strcmp(argv[arg], "--salvage-cluster")    ? OP_SALVAGE
+                 : !strcmp(argv[arg], "--relocate-cluster") ? OP_RELOCATE
                  : (!strcmp(argv[arg], "--mark-bad") || !strcmp(argv[arg], "--mark-sector"))
                      ? OP_MARK
                      : OP_UNMARK;
-            errno = 0;
-            n = strtoul(argv[++arg], &end, 10);
-            if (!*argv[arg] || *end || errno || n > 0xfffffffeUL || (!sector_arg && n < 2)) {
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n > 0xfffffffeUL || (!sector_arg && n < 2)) {
                 puts("Invalid cluster or disk sector number");
                 return 2;
             }
@@ -401,8 +537,9 @@ int main(int argc, char **argv)
             op = OP_RESTORE;
             journal = argv[++arg];
         } else if (!strcmp(argv[arg], "--partition") && arg + 1 < argc) {
-            unsigned long n = strtoul(argv[++arg], &end, 10);
-            if (!*argv[arg] || *end || n < 1 || n > 128) {
+            dt_u32 n;
+
+            if (!dt_parse_u32(argv[++arg], 10, &n) || n < 1 || n > 128) {
                 puts("Invalid partition number");
                 return 2;
             }
@@ -415,21 +552,24 @@ int main(int argc, char **argv)
     }
     if ((torn && (op != OP_RESTORE || !apply)) || (fat_source && op != OP_TREE) ||
         (listing && (surface || index || op != OP_SCAN)) || (surface && op != OP_SCAN) ||
-        (apply && op != OP_MARK && op != OP_UNMARK && op != OP_RESTORE && op != OP_FSINFO &&
-         op != OP_BOOT_BACKUP && op != OP_MIRROR && op != OP_RECLAIM && op != OP_CHAINS &&
-         op != OP_DIRECTORIES && op != OP_BOOT_PRIMARY && op != OP_TREE && op != OP_ENTRIES &&
-         op != OP_RELOCATE) ||
+        (apply && op != OP_FAT_HEADERS && op != OP_MARK && op != OP_UNMARK && op != OP_RESTORE &&
+         op != OP_FSINFO && op != OP_BOOT_BACKUP && op != OP_MIRROR && op != OP_RECLAIM &&
+         op != OP_CHAINS && op != OP_DIRECTORIES && op != OP_BOOT_PRIMARY && op != OP_TREE &&
+         op != OP_ENTRIES && op != OP_LFN && op != OP_ALIASES && op != OP_LABELS &&
+         op != OP_TIMESTAMPS && op != OP_RELOCATE && op != OP_SALVAGE) ||
         (boot_source && op != OP_SCAN && op != OP_BOOT_PRIMARY && op != OP_RESTORE) ||
         (journal && !apply) || (apply && !journal) || (op == OP_RESTORE && !apply)) {
         puts("Conflicting options, or missing --apply / --journal for a write operation");
         return 2;
     }
+    if (dt_oem_codepage())
+        printf("OEM code page: %u (explicit selection)\n", dt_oem_codepage());
     if (bios == 2 && (index || listing)) {
         puts("A DOS drive already identifies one volume; partition options do not apply.");
         return 2;
     }
-    if (bios == 1 && apply) {
-        puts("BIOS writes are not enabled yet. Retesting and previews are available.");
+    if (bios == 1 && apply && !index) {
+        puts("BIOS writes require --partition N on an unmounted IDE disk.");
         return 2;
     }
     if (bios == 2)
@@ -477,6 +617,14 @@ int main(int argc, char **argv)
         close_disk(&disk, bios);
         return 2;
     }
+    if (bios == 1 && apply &&
+        !dt_bios_enable_writes(&disk, volume.start, volume.total, journal, err)) {
+        puts(err);
+        close_disk(&disk, bios);
+        return 2;
+    }
+    if (bios == 1 && apply)
+        puts("Unmounted IDE write access: run only from a clean DOS boot without disk TSRs.");
     if (boot_source)
         printf("Recovery geometry: FAT32 backup sector %u.\n", boot_source);
     if (bios == 2)
@@ -496,33 +644,58 @@ int main(int argc, char **argv)
         }
         cluster = (cluster - first_data) / volume.spc + 2;
     }
-    if (op == OP_RECOVER || op == OP_EXPORT_FILES) {
+    if (op == OP_RECOVER || op == OP_EXPORT_FILES || op == OP_DELETED || op == OP_ORPHAN_DIR) {
         DtRecovery recovered;
 
-        status = op == OP_EXPORT_FILES
-                     ? dt_export_files(&volume, destination, &recovered, NULL, NULL, err)
-                     : dt_recover_lost(&volume, destination, &recovered, NULL, NULL, err);
+        status =
+            op == OP_ORPHAN_DIR
+                ? dt_recover_directories(&volume, destination, &recovered, NULL, NULL, err)
+            : op == OP_DELETED
+                ? dt_recover_deleted(&volume, destination, &recovered, NULL, NULL, err)
+            : op == OP_EXPORT_FILES
+                ? (cluster ? dt_export_cluster_file(
+                                 &volume, cluster, destination, &recovered, NULL, NULL, err)
+                           : dt_export_files(&volume, destination, &recovered, NULL, NULL, err))
+                : dt_recover_lost(&volume, destination, &recovered, NULL, NULL, err);
         if (!status)
             puts(err);
-        printf("%s export %s: %lu files, %lu/%lu clusters, %lu unreadable sectors.\n",
-               op == OP_EXPORT_FILES ? "Live-file" : "Lost-chain",
-               recovered.complete ? "finished" : "INCOMPLETE",
-               (unsigned long)recovered.files,
-               (unsigned long)recovered.clusters,
-               (unsigned long)recovered.lost,
-               (unsigned long)recovered.unreadable);
+        if (op == OP_DELETED || op == OP_ORPHAN_DIR)
+            printf("%s export %s: %lu candidates, %lu files, %lu clusters.\n",
+                   op == OP_ORPHAN_DIR ? "Orphan-directory" : "Deleted-candidate",
+                   recovered.complete ? "finished" : "INCOMPLETE",
+                   (unsigned long)recovered.candidates,
+                   (unsigned long)recovered.files,
+                   (unsigned long)recovered.clusters);
+        else
+            printf("%s export %s: %lu files, %lu/%lu clusters, %lu unreadable sectors.\n",
+                   op == OP_DELETED        ? "Deleted-candidate"
+                   : op == OP_EXPORT_FILES ? "Live-file"
+                                           : "Lost-chain",
+                   recovered.complete ? "finished" : "INCOMPLETE",
+                   (unsigned long)recovered.files,
+                   (unsigned long)recovered.clusters,
+                   (unsigned long)recovered.lost,
+                   (unsigned long)recovered.unreadable);
         if (*recovered.directory)
             printf("Recovery directory: %s\nSee RECOVERY.TXT for cluster locations and gaps.\n",
                    recovered.directory);
+        if (recovered.catalog_incomplete)
+            puts("Directory catalog INCOMPLETE: unreadable entries may hide files or owners.\n"
+                 "Unreadable-sector counts above describe file payload only.");
         if (recovered.damaged)
             printf("%lu damaged files/directories; inspect the manifest.\n",
                    (unsigned long)recovered.damaged);
-        if (recovered.issues)
+        if (op == OP_DELETED || op == OP_ORPHAN_DIR)
+            puts("All candidates are unverified; contiguous guesses may not match deleted "
+                 "contents.");
+        if (recovered.issues && op != OP_DELETED && op != OP_ORPHAN_DIR)
             printf("%lu scan findings recorded in the manifest.\n",
                    (unsigned long)recovered.issues);
-        status = !status                                                           ? 2
-                 : (recovered.unreadable || recovered.damaged || recovered.issues) ? 1
-                                                                                   : 0;
+        status = !status ? 2
+                 : (recovered.unreadable || recovered.damaged || recovered.issues ||
+                    recovered.candidates)
+                     ? 1
+                     : 0;
         if (!close_disk(&disk, bios))
             status = 2;
         return status;

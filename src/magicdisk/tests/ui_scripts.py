@@ -5,6 +5,8 @@ KEYS = {'enter': 0x000d, 'esc': 0x001b, 'f10': 0x4400, 'right': 0x4d00,
 
 
 def step(cue, key, focus=False, absent=''):
+    if any(char in cue or char in absent for char in ['|', '\r', '\n']):
+        raise ValueError('KEYPLAY cues cannot contain field separators or newlines')
     value = KEYS[key] if isinstance(key, str) else key
     return f'{0x3f if focus else 0:x}|{cue}|{absent}|{value:04x}\n'
 
@@ -48,8 +50,15 @@ floppy_keys = (device_keys + step('Floppy drive 1', 'enter', True) +
 hard_keys = (device_keys + step('SELECT BIOS DEVICE', 'end') + step('Other device...', 'up', True) +
              step('Hard disk 1', 'enter', True) + step('FAT16', 'down', True) +
              step('FAT32', 'enter', True) +
-             step('Allocation view ready.', 'f3', absent='SELECT VOLUME') + save_report('HD.TXT'))
+             step('Allocation view ready.', 'f3', absent='SELECT VOLUME') +
+             step('Check finished.', 'f7') + typing('SAVE REPORT TO A SEPARATE DISK', 'HD.TXT') +
+             step('Save reports on a different physical disk.', 'f7') +
+             typing('SAVE REPORT TO A SEPARATE DISK', 'A:\\HD.TXT') +
+             step('Report saved.', 'esc'))
 fsinfo_keys = (diagnose() + step('Filesystem check', 'up', True) +
+               step('Clear invalid timestamps', 'up', True) +
+               step('Clear invalid long names', 'up', True) +
+               step('Repair invalid DOS names', 'up', True) +
                step('Rebuild FAT32 FSInfo', 'enter', True) + step('REVIEW FSINFO REPAIR', 'enter') +
                typing('TYPE REBUILD TO REPAIR FSINFO', 'REBUILD') +
                typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'FSUI.MDJ') +
@@ -62,6 +71,9 @@ lfn_keys = (step('Allocation view ready.', 'f3') + step('Check finished.', 'f6')
 
 
 boot_keys = (diagnose() + step('Filesystem check', 'up', True) +
+             step('Clear invalid timestamps', 'up', True) +
+             step('Clear invalid long names', 'up', True) +
+             step('Repair invalid DOS names', 'up', True) +
              step('Rebuild FAT32 FSInfo', 'up', True) +
              step('Rebuild backup boot', 'enter', True) +
              step('REVIEW BACKUP BOOT REPAIR', 'enter') +
@@ -79,6 +91,9 @@ mounted_keys = (step('Ready. F10 opens the menu', 'f10') + step('Open image...',
                          typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'C:\\RAWUI.MDJ')))
 
 mirror_keys = (diagnose() + step('Filesystem check', 'up', True) +
+               step('Clear invalid timestamps', 'up', True) +
+               step('Clear invalid long names', 'up', True) +
+               step('Repair invalid DOS names', 'up', True) +
                step('Rebuild FAT32 FSInfo', 'up', True) +
                step('Rebuild backup boot', 'up', True) +
                step('Rebuild FAT copies', 'enter', True) +
@@ -95,8 +110,12 @@ mounted_recovery_keys = (
     step('Ready. F10 opens the menu', 'f10') + step('Open image...', 'down', True) +
     step('BIOS device...', 'down', True) + step('DOS volume...', 'enter', True) +
     typing('OPEN DOS VOLUME (DRIVE LETTER)', 'D') + diagnose() +
-    step('Filesystem check', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Filesystem check', 'up', True) +
+    step('Clear invalid timestamps', 'up', True) +
+    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Repair invalid DOS names', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
+    step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'enter', True) + step('RECOVER LOST CHAINS', 'enter') +
     typing('RECOVERY DESTINATION DIRECTORY', 'C:\\') +
     step('LOST-CHAIN RECOVERY RESULTS', 'enter') +
@@ -106,8 +125,12 @@ mounted_reclaim_keys = (
     step('Ready. F10 opens the menu', 'f10') + step('Open image...', 'down', True) +
     step('BIOS device...', 'down', True) + step('DOS volume...', 'enter', True) +
     typing('OPEN DOS VOLUME (DRIVE LETTER)', 'D') + diagnose() +
-    step('Filesystem check', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Filesystem check', 'up', True) +
+    step('Clear invalid timestamps', 'up', True) +
+    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Repair invalid DOS names', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
+    step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'up', True) + step('Reclaim lost allocation...', 'enter', True) +
     step('REVIEW LOST-ALLOCATION REPAIR', 'enter') +
     typing('TYPE RECLAIM TO FREE LOST ALLOCATION', 'RECLAIM') +
@@ -115,8 +138,12 @@ mounted_reclaim_keys = (
     step('Repair verified.', 'f3') + save_report('LOSTUI.TXT'))
 
 chain_menu = (
-    step('Filesystem check', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Filesystem check', 'up', True) +
+    step('Clear invalid timestamps', 'up', True) +
+    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Repair invalid DOS names', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
+    step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'up', True) + step('Reclaim lost allocation...', 'up', True) +
     step('Repair file chains...', 'enter', True))
 mounted_chain_keys = (

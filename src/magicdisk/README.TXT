@@ -1,0 +1,287 @@
+MAGICDISK 0.3 - DOS DEVELOPMENT BUILD
+===================================
+Developer: Felipe Andrade Allemand Borges
+Part of the Retrolities project.
+
+MagicDisk inspects and repairs FAT12, FAT16 and FAT32 volumes. This is a
+development build, not yet a complete ScanDisk/Norton Disk Doctor replacement.
+Keep the recovery journal and export important files before repairing them.
+
+GETTING STARTED
+---------------
+Requires a 386 or newer CPU and an 80-column color text display. DOS/32A is
+embedded in MAGICDSK.EXE; a separate extender executable is not required.
+Tested in QEMU with MS-DOS 6.22, FreeDOS and Windows 98 SE DOS mode.
+Windows desktop DOS windows and every physical controller are not validated.
+
+Extract every file in this archive into a directory accessible from DOS.
+Use DOS-compatible paths, normally 8.3 names or aliases. Run:
+
+  MAGICDSK
+
+Press F10, choose Disk, then select a DOS volume, BIOS device or image.
+Select a DOS drive letter for a mounted volume or floppy that needs repair.
+Select a BIOS device to inspect the physical disk and its MBR partitions.
+BIOS IDs are hexadecimal: 00 = first floppy, 80 = first hard disk.
+F2 selects a primary or logical partition. GPT is not supported.
+
+KEYBOARD AND MAP
+----------------
+  F10  Menus: Disk, Diagnose, View, Reports, Help
+       Arrows navigate; Home/End select first/last; Enter opens; Esc closes.
+       Page Up/Down move through long menus; both status bars stay visible.
+  F2   Select a volume           F3  Check filesystem
+  F4   Read every volume sector  F5  Allocation map
+  F6   Findings                  F7  Save report
+  F8   Read-only hex/ASCII sector viewer
+  Arrows  Select map blocks      +   Zoom in     -   Whole volume
+  Enter   Block details; Enter again opens its first sector
+  O       Cluster owner (map, View menu, or sector viewer)
+  Esc     Cancel inspection, close a dialog, or exit
+
+Allocation colors describe FAT entries, not file health. Red errors can mean
+unreadable FAT entries or invalid FAT values. A bad marker does not prove a
+sector is still unreadable. Surface reads and retests never change markers.
+Pending blocks were not inspected. Incomplete results are not a clean bill
+of health. F6 findings retain locations; F7 reports preserve full UTF-8 names.
+The summary row retains surface-read totals when returning to the allocation
+map, marks incomplete checks in amber and distinguishes previews from repairs.
+After repair, run a new check; previous results are cleared.
+Owner lookup shows the first catalog owner, path and directory-entry location.
+On the map it uses the block's first data cluster; in F8 it uses that sector.
+Scan findings or incomplete reads make ownership uncertain. Left/Right scroll
+long paths; Esc returns without changing findings or disk contents.
+For regular-file owners, R opens export review for that exact cluster. Choose
+a separate destination; directory owners and unknown owners have no R action.
+The findings list grows with available memory. If memory runs out, earlier
+findings remain available and the omitted count appears in the saved report.
+Report saving commits the file and refuses to overwrite an existing file.
+
+INSPECT, EXPORT, THEN REPAIR
+---------------------------
+Cluster relocation skips unreadable free destinations and checks every sector
+of a candidate before selecting it. Skipped clusters remain unchanged.
+Source-data copying tries each sector up to three times. Esc cancels between
+retries; persistent read failures stop relocation without substituting bytes.
+
+1. Open the intended source and check the displayed drive/partition and size.
+2. Use F3 and F4. Review the findings with F6; save the report with F7.
+3. Export valuable data to an existing directory on a different disk.
+4. Choose the relevant Diagnose repair. Review its proposed changes.
+5. Enter its confirmation word and a NEW journal filename on a separate disk.
+6. Keep the journal. Restore journal can undo that operation if the current
+   metadata still matches the transaction. Later changes can prevent undo.
+
+Writes show Wait and cannot be cancelled midway. MagicDisk saves original
+and proposed sectors, verifies writes, and attempts rollback after a failure.
+If rollback or DOS flush/unlock fails, preserve the journal and stop using
+the volume until recovery is reviewed. Do not delete the journal to retry.
+
+Mark bad sector accepts a sector LBA within the selected data area. A free,
+unowned cluster can be marked. Readable live data may be relocated first.
+Unmark requires an unowned bad cluster whose sectors all pass a read retest.
+If live-file data cannot be relocated, Mark bad sector offers SALVAGE:
+readable sectors move, but each persistently unreadable sector becomes 512
+ZERO bytes in the replacement. Missing bytes are NOT recovered. Export needed
+data first. The review shows the filename and loss count and requires typing
+SALVAGE. Cancel to inspect F6 findings or save the loss preview with F7.
+CLI: --salvage-cluster N previews; --apply --journal NEW.MDJ commits.
+Directories are excluded. Original source sectors are never written.
+Undo restores the old allocation, not the missing bytes; it requires unchanged
+source data and readability. Version-16 journals record each zero-filled gap.
+Retest reports attempted sectors and failed reads separately. Cancellation
+retains observed failures and all markers, and reports incomplete results.
+
+The Diagnose menu also provides FAT-copy, FAT32 FSInfo and boot-sector repairs,
+file/directory chain repair, directory-entry correction, invalid timestamp
+clearing, and lost-allocation reclaim. Preview is not permission to discard
+unknown data: ownership conflicts and unproven repairs are refused.
+
+Reports > Export live files saves healthy files and recoverable prefixes.
+It can skip an unreadable directory sector after three attempts and export
+other visible files. The manifest lists DIRECTORY_GAP locations and marks the
+export INCOMPLETE; skipped entries may hide additional files or owners.
+LFN groups are never joined across gaps. Repair scans remain strict.
+The results screen labels an incomplete directory catalog explicitly.
+Zero unreadable payload sectors does not mean that every file was found.
+Reports > Recover deleted files exports UNVERIFIED candidates; cleared FAT
+links can require a contiguous guess. Diagnose > Recover lost chains exports
+unowned chains with unknown original names and lengths. Exports use numbered
+.CHK files and a RECOVERY.TXT manifest. Read gaps are recorded, not hidden.
+A deleted directory with a retained unowned FAT chain can be exported when
+one dot slot is entirely erased and the other dot entry matches. Raw dot
+metadata is recorded as UNVERIFIED evidence. Conflicting dot pointers, two
+missing dot slots, or missing dots with cleared FAT links stop traversal.
+Deleted-directory metadata reads retry up to three times. Cancellation is
+available between attempts. DIRECTORY_RETRY records the outcome; persistent
+metadata errors stop traversal. Metadata is never filled with guessed bytes.
+Recovery exports do not undelete entries or alter source allocation.
+
+SELECTED BLOCK RETEST
+--------------------
+Press T or choose View > Retest map block to read the selected block's sectors.
+This works in allocation and surface maps, without changing bad markers.
+RANGE COMPLETE applies only to that range. F7 saves the exact tested sector
+range and disk LBAs; F5 keeps the summary visible beside the allocation map.
+F4 still reads the whole volume. New tests replace the previous findings.
+
+MAP SIZE LABELS
+----------------
+Sizes use rounded B, KiB, MiB, GiB or TiB labels. Exact disk LBA ranges are
+shown separately. A single-sector block displays 512 B. Map shortcuts have
+their own line so long sector numbers do not hide the controls.
+
+ACTIONS FROM FINDINGS
+----------------------
+After a surface read or bad-cluster retest, F6 opens the findings. Select a row
+and press M to review marking its cluster bad, or U to retest and review
+unmarking a bad cluster. The footer shows which action is available. No sector
+number needs to be copied. The usual review, confirmation and journal are
+required. Unreadable clusters cannot be unmarked. Metadata is inspect-only.
+R finds and exports the regular file owning the selected sector. Choose a
+separate recovery destination; missing owners and directory clusters are
+refused. Unreadable bytes become recorded zero-filled gaps in RECOVERY.TXT.
+CLI: MAGICDSK FLOPPY.IMG --export-cluster 1000 C:\RECOVER
+F8 opens the selected sector in the read-only viewer.
+
+BIOS WRITES AND DESTINATIONS
+----------------------------
+BIOS repair requires an unmounted IDE partition, a clean DOS boot without
+disk caches or disk TSRs, and a journal on a different known local IDE disk.
+The entire source physical disk must have no mounted DOS partitions.
+Only verified legacy IDE port mappings with ATA flush support are accepted.
+Unsupported controllers, unknown local devices and mounted sources are refused.
+For mounted media, select Disk > DOS volume instead.
+
+BIOS reports and recovery exports require a different physical disk. Another
+partition on the same disk is not a separate destination. Raw BIOS floppy
+writes are not enabled; use the mounted DOS floppy drive for repairs.
+
+RESERVED FAT HEADERS
+---------------------
+Diagnose > Rebuild FAT headers repairs reserved entries when every FAT copy
+has header damage. It retains clean-shutdown and I/O-error flags and checks
+allocation and directory ownership before offering changes. Remaining mirror
+disagreements are refused. Only the active FAT changes if mirroring is off.
+The boot sector must contain a recognized media descriptor. A new journal
+(version 15) saves original bytes for undo or interrupted-write recovery.
+CLI: MAGICDSK FLOPPY.IMG --repair-fat-headers
+Add --apply --journal HEADERS.MDJ after reviewing the preview.
+
+COMMAND LINE EXAMPLES
+----------------------
+  MAGICDSK --help
+  MAGICDSK --devices
+  MAGICDSK --dos-map
+  MAGICDSK --drive A
+  MAGICDSK --drive D --surface
+  MAGICDSK --drive D --retest-bad
+  MAGICDSK --bios 80 --list
+  MAGICDSK --bios 80 --partition 1
+  MAGICDSK FLOPPY.IMG
+  MAGICDSK --tui FLOPPY.IMG
+  MAGICDSK HDD.IMG --partition 1
+  MAGICDSK FLOPPY.IMG --mark-bad 1000
+  MAGICDSK FLOPPY.IMG --mark-bad 1000 --apply --journal MARK.MDJ
+  MAGICDSK FLOPPY.IMG --restore-journal MARK.MDJ --apply
+
+Without --apply, repair commands preview changes. --help lists the repair,
+export and recovery switches. --accept-torn is only for reviewed interrupted
+journal writes whose current bytes match saved before/after bytes. It does
+not override unrelated changes or reconstruct unreadable data.
+
+Image/BIOS sector LBAs are absolute within that source; --drive LBAs start
+at zero within the DOS volume. Cluster numbers are not sector numbers.
+Enter unsigned decimal numbers without signs or spaces. BIOS drive numbers
+use hex; the sector viewer also accepts 0x-prefixed hex. Overflow and trailing
+characters are rejected before selecting a disk location.
+Exit codes: 0 = completed without detected issues, 1 = completed with issues,
+2 = refused, invalid input, unsupported geometry, or incomplete inspection.
+
+LIMITS AND LONG NAMES
+---------------------
+512-byte sectors and MBR partitions only. DOS images can be up to 4 GiB minus
+512 bytes when the host filesystem supports the file. Windows 98 DOS and
+FreeDOS can host large images on FAT32; MS-DOS 6.22 host files remain subject
+to that kernel's filesystem limits. Image access never extends the file.
+FAT32 can also be inspected via BIOS on MS-DOS 6.22 even though that kernel
+cannot mount it as a DOS drive.
+
+VFAT long names are decoded from disk without requiring DOS LFN services.
+Reports retain UTF-8; the VGA screen uses CP437 or '?' for unavailable glyphs.
+DIR_NAME identifies invalid short-alias bytes even beneath a valid long name.
+Findings include the byte value and location; inspection preserves the name.
+OEM/DBCS punctuation is left undecided when the original code page is unknown.
+DIR_LABEL identifies extra root volume labels and points to the first label.
+Conflicting labels are preserved and block ownership-sensitive repairs.
+Unicode 3.2 simple-uppercase comparisons detect long-name case collisions.
+Unknown OEM code pages are not guessed. Host paths still need to be accessible
+to the running DOS kernel, normally through 8.3 aliases.
+
+Unreadable data cannot be reconstructed from nothing. Missing directory data,
+ambiguous ownership and cleared fragmented deleted chains may remain
+unresolved.
+Real hardware power-loss durability and broader controller support remain
+unvalidated. See src/magicdisk/README.md in the source tree for full details.
+
+CREDITS AND FILES
+-----------------
+Developer: Felipe Andrade Allemand Borges
+MagicDisk: MIT License, reproduced in LICENSE.TXT.
+This product uses DOS/32 Advanced DOS Extender technology.
+DOS/32A notice: DOS32A.TXT. Open Watcom notice: WATCOM.TXT.
+Unicode character data notice: UNICODE.TXT.
+SHA256.TXT lists the archive payload checksums (excluding itself).
+No DOS operating system, boot image or proprietary driver is included.
+
+OEM SHORT NAMES
+---------------
+FAT does not identify the OEM code page that created short names. MagicDisk
+escapes unknown bytes by default. Disk > OEM code page accepts 0 (unknown),
+437, 850, 852 (Central European), 860 (Portuguese), or 866 (Cyrillic).
+Select a page only when the source encoding is known; the policy
+applies to all sources in this session. Changing it clears prior findings.
+CLI examples:
+  MAGICDSK FLOPPY.IMG --code-page 850
+  MAGICDSK --code-page 437 --tui
+Reports and all recovery/export manifests record the policy. Filename and
+extension lowercase flags also apply to decoded accented short-name letters.
+Decoded aliases participate
+in Unicode name collision checks. Source name bytes are never rewritten.
+These choices do not cover DBCS encodings or every DOS locale's casing rules.
+
+REPAIR FROM FINDINGS
+-------------------
+When the findings footer offers P, press it to review the existing repair
+workflow for that issue type. The proposed changes may cover multiple entries
+on the volume. Normal review, typed confirmation and a separate journal are
+still required before writes. FAT-copy disagreements ask which copy to trust.
+Esc cancels. Unsupported findings and preview lists do not offer this action.
+
+ORPHAN DIRECTORY DISCOVERY
+  MAGICDSK IMAGE.IMG --recover-directories DESTINATION
+  Report > Find orphan directories searches allocated, unowned clusters for
+  intact dot pairs and exports surviving contents as UNVERIFIED candidates.
+  It requires readable, unambiguous live ownership and never changes the
+  source or reattaches directories. RECOVERY.TXT preserves raw evidence,
+  names and gaps. Unreadable search sectors leave the export incomplete.
+
+INVALID LONG-NAME CLEANUP
+  MAGICDSK IMAGE.IMG --clear-invalid-lfn
+  Add --apply --journal NEW.MDJ after reviewing the preview.
+  Diagnose > Clear invalid long names requires typing CLEAR. This deletes
+  invalid/orphaned LFN records; it does not reconstruct the lost name.
+  DOS aliases, valid long names, contents and allocation remain unchanged.
+  Readable, unambiguous directory ownership is required. Version-17 journals
+  preserve original directory sectors for validated undo.
+
+INVALID DOS ALIAS REPAIR
+  MAGICDSK IMAGE.IMG --repair-short-names
+  Add --apply --journal NEW.MDJ after reviewing the replacement names.
+  Diagnose > Repair invalid DOS names requires typing RENAME.
+  Invalid aliases become unique R0000001.CHK-style names. Valid LFN text,
+  contents, dates and allocation stay intact; LFN checksums follow the alias.
+  Version-18 journals retain the OEM policy for validated undo in later
+  sessions. Candidate checks read their directory namespace. Full ownership
+  and proposed-volume scans still run before approval. Preparation can be
+  cancelled. Unknown DBCS punctuation is not guessed.

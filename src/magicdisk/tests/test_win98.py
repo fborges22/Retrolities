@@ -483,6 +483,9 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-win98-') as directory:
         print("PASS: QEMU Windows 98 lock capability probe; original boot image unchanged")
         sys.exit(0)
     primary_view = str(disk) + '@@' + str(primary_start * 512)
+    if any(name == 'HD' for name, _, _ in tours):
+        refused = subprocess.run(['mtype', '-i', primary_view, '::/HD.TXT'], capture_output=True)
+        assert refused.returncode != 0, 'BIOS report was written onto the source disk'
     if viewer_only:
         assert 'FAIL' not in report('STATUS.TXT') and 'DONE' in report('STATUS.TXT')
         for name, target, keys in tours:
@@ -491,7 +494,7 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-win98-') as directory:
             result_image = root / ('RESULT-' + name)
             command('mcopy', '-i', primary_view, '::/' + name, str(result_image))
             assert digest(result_image) == expected_hash
-        assert 'Issues: 0' in report('HD.TXT', primary_view)
+        assert 'Issues: 0' in report('HD.TXT')
         with disk.open('rb') as file:
             file.seek(secondary_start * 512)
             assert file.read(secondary.stat().st_size) == secondary.read_bytes()
@@ -724,11 +727,13 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-win98-') as directory:
     for name, target, keys in tours:
         if name in ['FS', 'BOOT', 'MARK']:
             assert 'restored and verified' in report(name + 'UNDO.TXT')
-    for name in ['FS.TXT', 'BOOTUI.TXT', 'FD.TXT', 'HD.TXT']:
+    for name in ['FS.TXT', 'BOOTUI.TXT', 'FD.TXT']:
         output = report(name, primary_view)
         assert 'Inspection: complete' in output and 'Issues: 0' in output, output
     assert 'BIOS 00h' in report('FD.TXT', primary_view)
-    assert 'Volume LBA: ' + str(secondary_start) in report('HD.TXT', primary_view)
+    hd_report = report('HD.TXT')
+    assert 'Inspection: complete' in hd_report and 'Issues: 0' in hd_report, hd_report
+    assert 'Volume LBA: ' + str(secondary_start) in hd_report
     lfn_report = report('LFN.TXT', primary_view)
     assert f'{PARENT}/{CHILD}/{UNICODE_FILE}' in lfn_report and 'x' * 255 in lfn_report
     assert lfn_report.count('DIR_TIMESTAMP') == 6, lfn_report

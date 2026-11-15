@@ -1,6 +1,34 @@
 #include "disk.h"
 #include <stdlib.h>
 #include <string.h>
+#include "namecase.h"
+#include "oemcode.h"
+
+/* Explicit process-wide policy shared by scans, repair validation and exports.
+   Zero preserves unknown OEM bytes as escapes; FAT stores no code page. */
+static const OemCodepage *oem_selected;
+
+int dt_set_oem_codepage(unsigned codepage)
+{
+    unsigned i;
+
+    if (!codepage) {
+        oem_selected = NULL;
+        return 1;
+    }
+    for (i = 0; i < sizeof(oem_pages) / sizeof(oem_pages[0]); i++) {
+        if (oem_pages[i].page == codepage) {
+            oem_selected = &oem_pages[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+unsigned dt_oem_codepage(void)
+{
+    return oem_selected ? oem_selected->page : 0;
+}
 
 typedef struct {
     dt_u32 start, size, parent, sector;
@@ -17,6 +45,7 @@ typedef struct {
     DtProgress progress;
     void *progress_ctx;
     int cancelled;
+    int recover_directories, directory_gaps;
     const char *path;
     unsigned char *used;
     DtFileVisit visit;
@@ -32,9 +61,9 @@ typedef struct {
 } DirectoryName;
 
 typedef struct {
-    dt_u32 start, parent, location, lfn_location;
-    unsigned position, dots, remaining, name_entries, checksum;
-    int root, ended, lfn_active, lfn_invalid;
+    dt_u32 start, parent, location, lfn_location, label_location;
+    unsigned position, dots, remaining, name_entries, checksum, label_offset;
+    int root, ended, lfn_active, lfn_invalid, label_seen, incomplete;
     const char *path;
     unsigned short name[260];
     DirectoryName *names;
@@ -224,6 +253,26 @@ static int finish_name(Scan *s, Directory *d, const unsigned char *entry)
     return !invalid;
 }
 
+int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned char *alias)
+{
+    Scan scan;
+    Directory directory;
+    DtResult result;
+    unsigned i;
+    int valid;
+
+    if (!entries || !alias || !count || count > 20)
+        return 0;
+    memset(&scan, 0, sizeof(scan));
+    memset(&directory, 0, sizeof(directory));
+    memset(&result, 0, sizeof(result));
+    scan.r = &result;
+    for (i = 0; i < count; i++)
+        long_entry(&scan, &directory, entries + i * 32, 0);
+    valid = finish_name(&scan, &directory, alias);
+    return valid && !result.errors;
+}
+
 static void file_name(const Directory *d, const unsigned char *entry, int long_name, char *out)
 {
     unsigned i, n = 0;
@@ -266,7 +315,20 @@ static void file_name(const Directory *d, const unsigned char *entry, int long_n
                 ch = 0xe5;
             if ((entry[12] & (i < 8 ? 8 : 16)) && ch >= 'A' && ch <= 'Z')
                 ch += 'a' - 'A';
-            if (ch >= 32 && ch < 127) {
+            if (ch >= 128 && oem_selected) {
+                const unsigned short *table = oem_selected->decode;
+
+                if (entry[12] & (i < 8 ? 8 : 16))
+                    table = oem_selected->lower;
+                ch = table[ch - 128];
+                if (ch < 2048) {
+                    out[n++] = (char)(0xc0 | (ch >> 6));
+                } else {
+                    out[n++] = (char)(0xe0 | (ch >> 12));
+                    out[n++] = (char)(0x80 | ((ch >> 6) & 63));
+                }
+                out[n++] = (char)(0x80 | (ch & 63));
+            } else if (ch >= 32 && ch < 127) {
                 out[n++] = (char)ch;
             } else {
                 sprintf(out + n, "\\x%02X", ch);
@@ -275,6 +337,44 @@ static void file_name(const Directory *d, const unsigned char *entry, int long_n
         }
     }
     out[n] = 0;
+}
+
+int dt_invalid_alias_byte(const unsigned char *entry)
+{
+    unsigned i;
+    int ascii = entry[0] != 5;
+
+    /* Without a known OEM policy, high bytes may be part of DBCS characters. */
+    for (i = 0; i < 11; i++) {
+        if (entry[i] >= 128)
+            ascii = 0;
+    }
+    for (i = 0; i < 11; i++) {
+        unsigned ch = entry[i];
+        int invalid = (ch < 32 && (i || ch != 5)) || (!i && (ch == ' ' || ch == '.')) ||
+                      ((ascii || oem_selected) && ch && strchr("\"*+,./:;<=>?[\\]|", ch));
+
+        if (invalid)
+            return (int)i;
+    }
+    return -1;
+}
+
+static void short_name(Scan *s, const unsigned char *entry, dt_u32 location, unsigned offset,
+                       const char *name)
+{
+    int invalid = dt_invalid_alias_byte(entry);
+
+    if (invalid >= 0) {
+        char message[960];
+
+        sprintf(message,
+                "%s: invalid short-name byte 0x%02X at sector byte %u; name unchanged",
+                name,
+                entry[invalid],
+                offset + (unsigned)invalid);
+        issue(s, "DIR_NAME", location, message);
+    }
 }
 
 static int valid_date(unsigned value)
@@ -294,6 +394,17 @@ static int valid_date(unsigned value)
     return day <= limit;
 }
 
+int dt_timestamp_valid(const unsigned char *entry, unsigned field)
+{
+    unsigned value = field == 13 ? entry[field] : dt_word(entry + field);
+
+    if (field == 13)
+        return value <= 199;
+    if (field == 14 || field == 22)
+        return (value & 31) <= 29 && ((value >> 5) & 63) <= 59 && (value >> 11) <= 23;
+    return valid_date(value);
+}
+
 static void timestamps(Scan *s, const unsigned char *entry, dt_u32 location, unsigned offset,
                        const char *name)
 {
@@ -309,15 +420,7 @@ static void timestamps(Scan *s, const unsigned char *entry, dt_u32 location, uns
     for (i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
         unsigned field = fields[i];
         unsigned value = field == 13 ? entry[field] : dt_word(entry + field);
-        int valid;
-
-        if (field == 13)
-            valid = value <= 199;
-        else if (field == 14 || field == 22)
-            valid = (value & 31) <= 29 && ((value >> 5) & 63) <= 59 && (value >> 11) <= 23;
-        else
-            valid = valid_date(value);
-        if (!valid) {
+        if (!dt_timestamp_valid(entry, field)) {
             char message[960];
 
             sprintf(message,
@@ -382,17 +485,172 @@ static void free_names(Directory *d)
     d->names_count = d->names_capacity = 0;
 }
 
+/* Names reach this index only after UTF-16 validation and UTF-8 encoding.
+   OEM aliases are decoded only under an explicitly selected code page. */
+static int name_key(const char *name, char *key, size_t capacity)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    size_t written = 0;
+
+    while (*p) {
+        dt_u32 ch = *p++;
+        size_t low = 0, high = sizeof(name_case) / sizeof(name_case[0]);
+        unsigned more = 0, length, i;
+
+        if (ch >= 0xf0) {
+            ch &= 7;
+            more = 3;
+        } else if (ch >= 0xe0) {
+            ch &= 15;
+            more = 2;
+        } else if (ch >= 0xc0) {
+            ch &= 31;
+            more = 1;
+        }
+        for (i = 0; i < more; i++) {
+            if ((*p & 0xc0) != 0x80)
+                return 0;
+            ch = (ch << 6) | (*p++ & 63);
+        }
+        while (low < high) {
+            size_t middle = low + (high - low) / 2;
+
+            if (name_case[middle].lower < ch)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        if (low < sizeof(name_case) / sizeof(name_case[0]) && name_case[low].lower == ch)
+            ch = name_case[low].upper;
+        length = ch < 0x80 ? 1 : ch < 0x800 ? 2 : ch < 0x10000UL ? 3 : 4;
+        if (written + length >= capacity)
+            return 0;
+        if (length == 1) {
+            key[written++] = (char)ch;
+        } else {
+            key[written++] = (char)((length == 2   ? 0xc0
+                                     : length == 3 ? 0xe0
+                                                   : 0xf0) |
+                                    (ch >> (6 * (length - 1))));
+            for (i = length - 1; i; i--)
+                key[written++] = (char)(0x80 | ((ch >> (6 * (i - 1))) & 63));
+        }
+    }
+    key[written] = 0;
+    return 1;
+}
+
+/* Query only a validated directory's proposed namespace. The caller still
+   validates ownership and the complete volume before accepting any repair. */
+static int namespace_sector(Scan *scan, Directory *directory, dt_u32 sector, const char *wanted,
+                            dt_u32 skip_sector, unsigned skip_offset, int *ended)
+{
+    unsigned char data[512];
+    char name[768], key[768];
+    unsigned offset;
+
+    if (!dt_read(scan->v, sector, data))
+        return -1;
+    for (offset = 0; offset < 512; offset += 32) {
+        const unsigned char *entry = data + offset;
+        int valid_long;
+
+        if (!entry[0]) {
+            orphan_name(scan, directory);
+            *ended = 1;
+            return scan->r->errors ? -1 : 1;
+        }
+        if (entry[0] == 0xe5 || (entry[11] & 8 && (entry[11] & 63) != 15) ||
+            !memcmp(entry, ".          ", 11) || !memcmp(entry, "..         ", 11)) {
+            orphan_name(scan, directory);
+        } else if ((entry[11] & 63) == 15) {
+            long_entry(scan, directory, entry, scan->v->start + sector);
+        } else {
+            valid_long = finish_name(scan, directory, entry);
+            if (scan->r->errors)
+                return -1;
+            if (sector == skip_sector && offset == skip_offset)
+                continue;
+            file_name(directory, entry, 0, name);
+            if (!name_key(name, key, sizeof(key)))
+                return -1;
+            if (!strcmp(key, wanted))
+                return 0;
+            if (valid_long) {
+                file_name(directory, entry, 1, name);
+                if (!name_key(name, key, sizeof(key)))
+                    return -1;
+                if (!strcmp(key, wanted))
+                    return 0;
+            }
+        }
+        if (scan->r->errors)
+            return -1;
+    }
+    return 1;
+}
+
+int dt_directory_name_available(DtVolume *v, dt_u32 directory_start, const char *candidate,
+                                dt_u32 skip_sector, unsigned skip_offset, DtProgress notify,
+                                void *ctx)
+{
+    Scan scan;
+    Directory directory;
+    DtResult result;
+    char wanted[768];
+    dt_u32 cluster = directory_start, visited = 0, first, count, i, next;
+    dt_u32 bad = v->bits == 12 ? 0xff7 : v->bits == 16 ? 0xfff7 : 0x0ffffff7;
+    int ended = 0, available;
+
+    if (!name_key(candidate, wanted, sizeof(wanted)))
+        return -1;
+    if (!cluster && v->bits == 32)
+        cluster = v->rootclus;
+    memset(&scan, 0, sizeof(scan));
+    memset(&directory, 0, sizeof(directory));
+    memset(&result, 0, sizeof(result));
+    scan.v = v;
+    scan.r = &result;
+    for (;;) {
+        if (cluster) {
+            if (cluster < 2 || cluster >= v->clusters + 2 || cluster >= bad - 7 ||
+                visited++ >= v->clusters)
+                return -1;
+            first = v->data + (cluster - 2) * v->spc;
+            count = v->spc;
+        } else {
+            first = v->root;
+            count = v->rootsz;
+        }
+        for (i = 0; i < count && !ended; i++) {
+            if (notify && !notify(ctx, "Check alias namespace", first + i, v->total))
+                return -1;
+            available = namespace_sector(
+                &scan, &directory, first + i, wanted, skip_sector, skip_offset, &ended);
+            if (available != 1)
+                return available;
+        }
+        if (ended || !cluster)
+            break;
+        if (!dt_fat(v, cluster, &next))
+            return -1;
+        if (next >= bad + 1)
+            break;
+        cluster = next;
+        if (!cluster)
+            return -1;
+    }
+    orphan_name(&scan, &directory);
+    return result.errors ? -1 : 1;
+}
+
 static int remember_name(Scan *s, Directory *d, const char *name, dt_u32 location, unsigned offset)
 {
     char key[768];
     size_t i, slot;
 
-    for (i = 0; name[i]; i++) {
-        unsigned ch = (unsigned char)name[i];
-
-        key[i] = (char)(ch >= 'a' && ch <= 'z' ? ch - 'a' + 'A' : ch);
-    }
-    key[i] = 0;
+    if (!name_key(name, key, sizeof(key)))
+        return 0;
     if (d->names_count >= d->names_capacity / 2) {
         size_t capacity = d->names_capacity ? d->names_capacity * 2 : 64;
         DirectoryName *names;
@@ -449,7 +707,7 @@ static void directory_end(Scan *s, Directory *d)
     orphan_name(s, d);
     /* A chain with no readable unique prefix has no inspected dot slots.
        Its chain finding describes the problem; missing dots are unproven. */
-    if (!d->root && d->location && d->dots != 3)
+    if (!d->root && !d->incomplete && d->location && d->dots != 3)
         issue(s,
               "DIR_DOT_MISSING",
               d->location,
@@ -459,13 +717,32 @@ static void directory_end(Scan *s, Directory *d)
 static int directory_sector(Scan *s, dt_u32 sector, Directory *d)
 {
     unsigned char b[512];
-    unsigned i;
+    unsigned i, attempt;
     dt_u32 location = s->v->start + sector;
 
     if (!progress(s, "Directories", (dt_u32)s->head, (dt_u32)s->count))
         return 0;
-    if (!dt_read(s->v, sector, b))
-        return 0;
+    if (s->recover_directories && d->ended)
+        return 1;
+    for (attempt = 0; attempt < (s->recover_directories ? 3u : 1u); attempt++) {
+        if (attempt && !progress(s, "Retry directory sector", attempt, 3))
+            return 0;
+        if (dt_read(s->v, sector, b))
+            break;
+    }
+    if (attempt == (s->recover_directories ? 3u : 1u)) {
+        if (!s->recover_directories)
+            return 0;
+        orphan_name(s, d);
+        d->incomplete = s->directory_gaps = 1;
+        d->position = 2;
+        issue(
+            s,
+            "DIRECTORY_GAP",
+            location,
+            "Unreadable directory sector skipped after 3 attempts; 16 entries unknown (disk LBA)");
+        return 1;
+    }
     if (d->ended)
         return 1;
     if (!d->location)
@@ -492,6 +769,21 @@ static int directory_sector(Scan *s, dt_u32 sector, Directory *d)
                     s, "DIR_ATTRIBUTE", location, "Invalid directory entry attributes (disk LBA)");
             if (e[11] & 8) {
                 orphan_name(s, d);
+                if (d->root && d->label_seen) {
+                    char message[160];
+
+                    sprintf(
+                        message,
+                        "Extra volume label at sector byte %u; first label at disk LBA %lu byte %u",
+                        i,
+                        (unsigned long)d->label_location,
+                        d->label_offset);
+                    issue(s, "DIR_LABEL", location, message);
+                } else if (d->root) {
+                    d->label_seen = 1;
+                    d->label_location = location;
+                    d->label_offset = i;
+                }
                 if (!d->root || c || dt_dword(e + 28))
                     issue(s,
                           "DIR_LABEL",
@@ -502,13 +794,12 @@ static int directory_sector(Scan *s, dt_u32 sector, Directory *d)
                 int long_name = finish_name(s, d, e);
 
                 file_name(d, e, long_name, name);
+                short_name(s, e, location, i, name);
                 timestamps(s, e, location, i, name);
                 file_name(d, e, 0, alias);
                 if (!remember_name(s, d, alias, location, i) ||
                     (long_name && !remember_name(s, d, name, location, i)))
                     return 0;
-                if (e[0] == '.')
-                    issue(s, "DIR_NAME", location, "Malformed dot entry or short name (disk LBA)");
                 if (dir) {
                     s->r->dirs++;
                     if (dt_dword(e + 28))
@@ -672,8 +963,55 @@ static void free_queue(Scan *s)
     free(s->queue);
 }
 
+/* Reserved entries describe the medium and end-of-chain/status bits, not
+   allocatable clusters. Matching FAT copies can still share a damaged header. */
+static int fat_headers(Scan *s)
+{
+    DtVolume *v = s->v;
+    unsigned first_copy = v->mirrored ? 0 : v->active;
+    unsigned last_copy = v->mirrored ? v->copies : v->active + 1;
+    unsigned copy;
+    unsigned char data[512];
+    dt_u32 first, second, expected;
+
+    expected = (v->bits == 12 ? 0xf00UL : v->bits == 16 ? 0xff00UL : 0x0fffff00UL) | v->boot[21];
+    for (copy = first_copy; copy < last_copy; copy++) {
+        char message[160];
+        dt_u32 sector = v->fat + copy * v->fatsz;
+
+        if (!progress(s, "FAT headers", copy - first_copy, last_copy - first_copy) ||
+            !dt_read(v, sector, data))
+            return 0;
+        if (v->bits == 12) {
+            first = dt_word(data) & 0xfff;
+            second = dt_word(data + 1) >> 4;
+        } else if (v->bits == 16) {
+            first = dt_word(data);
+            second = dt_word(data + 2);
+        } else {
+            first = dt_dword(data) & 0x0fffffffUL;
+            second = dt_dword(data + 4) & 0x0fffffffUL;
+        }
+        if (first != expected) {
+            sprintf(
+                message,
+                "FAT %u entry 0 disagrees with BPB media descriptor or reserved bits (disk LBA)",
+                copy + 1);
+            issue(s, "FAT_HEADER", v->start + sector, message);
+        }
+        if (v->bits == 12   ? second < 0xff8UL
+            : v->bits == 16 ? (second & 0x3fffUL) != 0x3fffUL
+                            : (second & 0x03ffffffUL) != 0x03ffffffUL) {
+            sprintf(message, "FAT %u entry 1 has invalid reserved bits (disk LBA)", copy + 1);
+            issue(s, "FAT_HEADER", v->start + sector, message);
+        }
+    }
+    return 1;
+}
+
 static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report, void *ctx,
-                DtProgress callback, void *progress_ctx, DtFileVisit visit, void *visit_ctx)
+                DtProgress callback, void *progress_ctx, DtFileVisit visit, void *visit_ctx,
+                int recover_directories)
 {
     Scan s;
     dt_u32 c, x, sec;
@@ -686,6 +1024,7 @@ static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report
     root.root = 1;
     root.path = "";
     memset(&s, 0, sizeof(s));
+    s.recover_directories = recover_directories;
     memset(r, 0, sizeof(*r));
     s.visit = visit;
     s.visit_ctx = visit_ctx;
@@ -698,6 +1037,8 @@ static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report
     s.used = (unsigned char *)calloc((size_t)((v->clusters + 9) / 8), 1);
     if (!s.used)
         goto memory;
+    if (!fat_headers(&s))
+        goto io;
     if (v->mirrored)
         for (sec = 0; sec < v->fatsz; sec++) {
             if (!progress(&s, "FAT copies", sec, v->fatsz))
@@ -739,7 +1080,8 @@ static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report
         else if (x == bad(v))
             r->bad_clusters++;
         else {
-            if ((x < 2 || x >= v->clusters + 2) && x < bad(v) + 1)
+            if ((x >= bad(v) - 7 && x < bad(v)) ||
+                ((x < 2 || x >= v->clusters + 2) && x < bad(v) + 1))
                 issue(&s, "FAT_RANGE", c, "Invalid FAT link or reserved cluster value");
             if (!used(&s, c))
                 r->lost_clusters++;
@@ -747,9 +1089,11 @@ static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report
     }
     if (r->lost_clusters)
         issue(&s,
-              "LOST_CLUSTERS",
+              s.directory_gaps ? "UNRESOLVED_CLUSTERS" : "LOST_CLUSTERS",
               r->lost_clusters,
-              "Allocated clusters are not owned by a directory entry");
+              s.directory_gaps ? "Allocated clusters have no visible owner; unreadable directory "
+                                 "entries may own them"
+                               : "Allocated clusters are not owned by a directory entry");
     if (v->boot_source) {
         if (!dt_read(v, 0, a))
             goto io;
@@ -780,7 +1124,7 @@ static int scan(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report
                 issue(&s, "BOOT_BACKUP", v->backup, "Backup boot sector differs");
         }
     }
-    r->complete = 1;
+    r->complete = !s.directory_gaps;
     if (owned)
         *owned = s.used;
     else
@@ -808,13 +1152,20 @@ memory:
 int dt_scan_owned(DtVolume *v, DtResult *r, unsigned char **owned, DtReport report, void *ctx,
                   DtProgress callback, void *progress_ctx)
 {
-    return scan(v, r, owned, report, ctx, callback, progress_ctx, NULL, NULL);
+    return scan(v, r, owned, report, ctx, callback, progress_ctx, NULL, NULL, 0);
 }
 
 int dt_scan_files(DtVolume *v, DtResult *r, DtFileVisit visit, void *visit_ctx, DtReport report,
                   void *report_ctx, DtProgress progress, void *progress_ctx)
 {
-    return scan(v, r, NULL, report, report_ctx, progress, progress_ctx, visit, visit_ctx);
+    return scan(v, r, NULL, report, report_ctx, progress, progress_ctx, visit, visit_ctx, 0);
+}
+
+int dt_scan_recoverable_files(DtVolume *v, DtResult *r, DtFileVisit visit, void *visit_ctx,
+                              DtReport report, void *report_ctx, DtProgress progress,
+                              void *progress_ctx)
+{
+    return scan(v, r, NULL, report, report_ctx, progress, progress_ctx, visit, visit_ctx, 1);
 }
 
 int dt_scan_ex(DtVolume *v, DtResult *r, DtReport report, void *ctx, DtProgress callback,

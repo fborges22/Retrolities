@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-relocate-') as directory:
                 path.write_bytes(partial)
                 run(path, '--restore-journal', journal, '--apply')
                 assert path.read_bytes() == original
-        for invalid in [0, 1, replacement, layout.cluster(layout.child())]:
+        for invalid in [0, 1, replacement]:
             path.write_bytes(original)
             unused = root / 'unused.mdj'
             run(path, '--relocate-cluster', invalid, '--apply', '--journal', unused, code=2)

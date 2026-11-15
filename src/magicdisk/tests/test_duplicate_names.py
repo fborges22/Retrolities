@@ -6,41 +6,9 @@ import subprocess
 import sys
 import tempfile
 from directory_fixture import create
+from duplicate_fixture import checksum, alias_name, long_name, CASE_PAIRS
 
 exe = Path(sys.argv[1]).resolve()
-
-
-def checksum(alias):
-    value = 0
-    for byte in alias:
-        value = ((value >> 1) | ((value & 1) << 7)) + byte
-        value &= 255
-    return value
-
-
-def alias_name(data, entry):
-    base = data[entry:entry + 8].decode('ascii').rstrip()
-    extension = data[entry + 8:entry + 11].decode('ascii').rstrip()
-    return base + ('.' + extension if extension else '')
-
-
-def long_name(data, parts, short, name):
-    fields = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30]
-    units = list(struct.unpack('<' + 'H' * (len(name.encode('utf-16-le')) // 2), name.encode('utf-16-le')))
-    count = (len(units) + 12) // 13
-    assert count <= len(parts)
-    if len(units) < count * 13:
-        units += [0] + [0xffff] * (count * 13 - len(units) - 1)
-    for part in parts[:-count]:
-        data[part] = 0xe5
-    for index, part in enumerate(parts[-count:]):
-        ordinal = count - index
-        data[part:part + 32] = bytes(32)
-        data[part] = ordinal | (0x40 if index == 0 else 0)
-        data[part + 11] = 15
-        data[part + 13] = checksum(data[short:short + 11])
-        for field, value in zip(fields, units[(ordinal - 1) * 13:ordinal * 13]):
-            struct.pack_into('<H', data, part + field, value)
 
 
 def run(path, *args, code=0):
@@ -83,6 +51,25 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-duplicates-') as directory:
             journal = root / f'{bits}-{mode}.mdj'
             run(path, '--repair-files', '--apply', '--journal', str(journal), code=2)
             assert not journal.exists() and path.read_bytes() == broken
+        for index, (lower, upper) in enumerate(CASE_PAIRS):
+            broken = bytearray(clean)
+            long_name(broken, first_parts, first, lower)
+            long_name(broken, second_parts, second, upper)
+            path.write_bytes(broken)
+            report = run(path, code=1)
+            assert 'DIR_DUPLICATE' in report and upper in report, report
+            assert 'LFN_' not in report and 'CHAIN_' not in report
+            journal = root / f'{bits}-unicode-{index}.mdj'
+            run(path, '--repair-files', '--apply', '--journal', str(journal), code=2)
+            assert not journal.exists() and path.read_bytes() == broken
+        # Simple uppercase does not expand strings or normalize accents.
+        for lower, upper in [('straße.txt', 'STRASSE.TXT'), ('é.txt', 'e\u0301.txt')]:
+            distinct = bytearray(clean)
+            long_name(distinct, first_parts, first, lower)
+            long_name(distinct, second_parts, second, upper)
+            path.write_bytes(distinct)
+            run(path)
+            assert path.read_bytes() == distinct
         # An entry's own LFN can equal its alias; equal names in other directories are valid.
         same = bytearray(clean)
         long_name(same, first_parts, first, alias_name(clean, first).lower())
@@ -96,8 +83,18 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-duplicates-') as directory:
             same[part + 13] = checksum(same[first:first + 11])
         path.write_bytes(same)
         run(path)
+        # Exercise the full UTF-8 key capacity and supplementary decoding.
+        root_parts, root_short = next((parts, short) for parts, short in layout.long_names(layout.root)
+                                     if layout.decoded_name(parts) == 'x' * 255)
+        for name in ['ａ' * 255, '𐐨' * 127 + 'a']:
+            maximum = bytearray(clean)
+            long_name(maximum, root_parts, root_short, name)
+            path.write_bytes(maximum)
+            run(path)
+            assert path.read_bytes() == maximum
+        path.write_bytes(same)
         if len(sys.argv) > 2:
             subprocess.run([str(Path(sys.argv[2]).resolve()), str(path)], check=True)
             assert path.read_bytes() == same
 
-print('PASS: FAT12/16/32 duplicate aliases, LFNs, ASCII case, Unicode exact matches and alias/LFN collisions; directory scope preserved')
+print('PASS: FAT12/16/32 duplicate aliases, LFNs, ASCII and Unicode case, Unicode exact matches and alias/LFN collisions; directory scope preserved')

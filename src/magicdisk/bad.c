@@ -55,8 +55,12 @@ int dt_bad_retest(DtVolume *v, DtRetest *result, DtReport report, void *report_c
     v->cache_sector = 0xffffffffUL;
     for (cluster = 2; cluster < v->clusters + 2; cluster++) {
         if (!(cluster & 31) && progress &&
-            !progress(progress_ctx, "Find bad clusters", cluster - 2, v->clusters))
+            !progress(progress_ctx, "Find bad clusters", cluster - 2, v->clusters)) {
+            if (report)
+                report(
+                    report_ctx, "RETEST_INCOMPLETE", cluster, "Retest cancelled while reading FAT");
             return 0;
+        }
         if (!dt_fat(v, cluster, &value)) {
             if (report)
                 report(report_ctx, "RETEST_INCOMPLETE", cluster, "Cannot read FAT entry");
@@ -73,8 +77,17 @@ int dt_bad_retest(DtVolume *v, DtRetest *result, DtReport report, void *report_c
                                 progress_ctx,
                                 report,
                                 report_ctx);
-        if (status < 0)
+        result->failed_sectors += failed;
+        if (status < 0) {
+            if (failed)
+                result->failed++;
+            if (report)
+                report(report_ctx,
+                       "RETEST_INCOMPLETE",
+                       cluster,
+                       "Retest cancelled before completing this cluster; markers retained");
             return 0;
+        }
         if (status) {
             result->readable++;
             if (report)
@@ -177,8 +190,7 @@ int dt_bad_plan(DtVolume *v, dt_u32 cluster, int mark_bad, DtPlan *plan, DtProgr
     return 1;
 }
 
-/* Relocate a readable file cluster before retiring its original allocation.
-   Directory relocation needs additional parent/dot handling and is separate. */
+/* Relocate a readable allocation cluster before retiring its original location. */
 typedef struct {
     DtVolume *volume;
     dt_u32 target, previous, entry_sector;
@@ -186,6 +198,11 @@ typedef struct {
     int directory;
     DtProgress progress;
     void *ctx;
+    DtPlan *plan;
+    dt_u32 replacement;
+    char *err;
+    DtReport report;
+    void *report_ctx;
 } Relocate;
 
 static int relocate_owner(void *ctx, const DtFile *file)
@@ -203,6 +220,8 @@ static int relocate_owner(void *ctx, const DtFile *file)
             r->entry_sector = file->sector;
             r->entry_offset = file->offset;
             r->directory = file->directory;
+            if (r->report && !file->directory)
+                r->report(r->report_ctx, "SALVAGE_FILE", r->target, file->path);
             break;
         }
         if (!dt_fat(r->volume, cluster, &next))
@@ -213,13 +232,38 @@ static int relocate_owner(void *ctx, const DtFile *file)
     return 1;
 }
 
-int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progress, void *ctx,
-                     char *err)
+static void relocate_start(DtVolume *v, unsigned char *entry, dt_u32 cluster)
+{
+    entry[26] = (unsigned char)cluster;
+    entry[27] = (unsigned char)(cluster >> 8);
+    if (v->bits == 32) {
+        entry[20] = (unsigned char)(cluster >> 16);
+        entry[21] = (unsigned char)(cluster >> 24);
+    }
+}
+
+static int relocate_child(void *ctx, const DtFile *file)
+{
+    Relocate *r = (Relocate *)ctx;
+    DtVolume *v = r->volume;
+    DtPatch *patch;
+
+    if (file->directory != 1 || file->parent != r->target)
+        return 1;
+    patch = dt_plan_sector(r->plan, v->data + (file->start - 2) * v->spc, r->err);
+    if (!patch)
+        return 0;
+    relocate_start(v, patch->after + 32, r->replacement);
+    return 1;
+}
+
+static int relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, int salvage, DtReport report,
+                         void *report_ctx, DtProgress progress, void *ctx, char *err)
 {
     Relocate owner;
     DtResult result;
     dt_u32 next, replacement, value, reserved, from, to, backup_info;
-    unsigned sector, copy;
+    unsigned sector, copy, attempt;
     int unsafe = 0;
     unsigned char bytes[512];
     DtPatch *patch;
@@ -234,13 +278,18 @@ int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progr
     owner.target = cluster;
     owner.progress = progress;
     owner.ctx = ctx;
+    owner.report = salvage ? report : NULL;
+    owner.report_ctx = report_ctx;
     v->cache_sector = 0xffffffffUL;
     if (!dt_scan_files(v, &result, relocate_owner, &owner, marker_issue, &unsafe, progress, ctx) ||
         unsafe)
         return fail(err,
                     "Relocation requires a complete filesystem check without allocation issues");
-    if (owner.owners != 1 || owner.directory)
-        return fail(err, "Relocation requires a cluster owned by one regular file");
+    if (owner.owners != 1)
+        return fail(err, "Relocation requires one file or directory owner");
+    if (salvage && owner.directory)
+        return fail(err,
+                    "Salvage permits regular file data only; directory bytes cannot be guessed");
     if (!dt_fat(v, cluster, &next))
         return fail(err, "Cannot read source cluster allocation");
     for (replacement = 2; replacement < v->clusters + 2 && replacement < reserved; replacement++) {
@@ -249,14 +298,26 @@ int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progr
             return fail(err, "Relocation cancelled; no sectors changed");
         if (!dt_fat(v, replacement, &value))
             return fail(err, "Cannot read replacement cluster allocation");
-        if (!value)
+        if (value)
+            continue;
+        to = v->data + (replacement - 2) * v->spc;
+        for (sector = 0; sector < v->spc; sector++) {
+            if (progress && !progress(ctx, "Check replacement cluster", sector, v->spc))
+                return fail(err, "Relocation cancelled; no sectors changed");
+            if (!dt_read(v, to + sector, bytes))
+                break;
+        }
+        if (sector == v->spc)
             break;
     }
     if (replacement >= v->clusters + 2 || replacement >= reserved)
-        return fail(err, "No free cluster is available for relocation");
+        return fail(err, "No readable free cluster is available for relocation");
     if (!dt_plan_init(plan, v, err))
         return 0;
-    plan->kind = DT_REPAIR_RELOCATE;
+    plan->kind = salvage                ? DT_REPAIR_SALVAGE
+                 : owner.directory == 2 ? DT_REPAIR_RELOCATE_ROOT
+                 : owner.directory      ? DT_REPAIR_RELOCATE_DIR
+                                        : DT_REPAIR_RELOCATE;
     plan->cluster = cluster;
     from = v->data + (cluster - 2) * v->spc;
     to = v->data + (replacement - 2) * v->spc;
@@ -265,8 +326,29 @@ int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progr
     for (sector = 0; sector < v->spc; sector++) {
         if (progress && !progress(ctx, "Copy file cluster", sector, v->spc))
             return fail(err, "Relocation cancelled; no sectors changed");
-        if (!dt_read(v, from + sector, bytes))
-            return fail(err, "Source cluster is unreadable; export recoverable file data first");
+        for (attempt = 0; attempt < 3; attempt++) {
+            if (attempt && progress && !progress(ctx, "Retry relocation sector", attempt, 3))
+                return fail(err, "Relocation retry cancelled; no sectors changed");
+            if (dt_read(v, from + sector, bytes))
+                break;
+        }
+        if (attempt == 3) {
+            if (!salvage)
+                return fail(err,
+                            "Source cluster is unreadable; export recoverable file data first");
+            memset(bytes, 0, sizeof(bytes));
+            plan->gaps[sector / 8] |= (unsigned char)(1u << (sector % 8));
+            if (report) {
+                char message[160];
+
+                sprintf(message,
+                        "Cluster %lu sector %u: all 512 replacement bytes will be ZERO; source "
+                        "unreadable after 3 attempts",
+                        (unsigned long)cluster,
+                        sector);
+                report(report_ctx, "SALVAGE_GAP", v->start + from + sector, message);
+            }
+        }
         patch = dt_plan_sector(plan, to + sector, err);
         if (!patch)
             return 0;
@@ -280,15 +362,26 @@ int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progr
             !dt_plan_set_fat(plan, cluster, bad_value(v), copy, err))
             return 0;
     }
-    if (!owner.previous) {
+    if (!owner.previous && owner.directory != 2) {
         patch = dt_plan_sector(plan, owner.entry_sector, err);
         if (!patch)
             return 0;
-        patch->after[owner.entry_offset + 26] = (unsigned char)replacement;
-        patch->after[owner.entry_offset + 27] = (unsigned char)(replacement >> 8);
-        if (v->bits == 32) {
-            patch->after[owner.entry_offset + 20] = (unsigned char)(replacement >> 16);
-            patch->after[owner.entry_offset + 21] = (unsigned char)(replacement >> 24);
+        relocate_start(v, patch->after + owner.entry_offset, replacement);
+        if (owner.directory) {
+            patch = dt_plan_sector(plan, to, err);
+            if (!patch)
+                return 0;
+            relocate_start(v, patch->after, replacement);
+            owner.plan = plan;
+            owner.replacement = replacement;
+            owner.err = err;
+            if (!dt_scan_files(
+                    v, &result, relocate_child, &owner, marker_issue, &unsafe, progress, ctx) ||
+                unsafe) {
+                if (!*err)
+                    fail(err, "Directory relocation ownership check failed or was cancelled");
+                return 0;
+            }
         }
     }
     if (v->bits == 32 && v->fsinfo && v->fsinfo != 0xffff) {
@@ -302,5 +395,46 @@ int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progr
                 return 0;
         }
     }
+    if (owner.directory == 2 && v->fsinfo && v->fsinfo != 0xffff) {
+        /* A concrete search-start hint avoids a DOS BPB reload normalizing
+           the unknown hint after commit and invalidating exact journal undo. */
+        patch = dt_plan_sector(plan, v->fsinfo, err);
+        if (!patch)
+            return 0;
+        put32(patch->after + 492, 2);
+        if (v->backup && v->backup != 0xffff) {
+            patch = dt_plan_sector(plan, v->backup + v->fsinfo, err);
+            if (!patch)
+                return 0;
+            put32(patch->after + 492, 2);
+        }
+    }
+    /* Publish a changed root pointer after allocation and FSInfo. DOS may
+       persist cached hints while synchronizing a boot-sector write. */
+    if (!owner.previous && owner.directory == 2) {
+        if (v->backup && v->backup != 0xffff) {
+            patch = dt_plan_sector(plan, v->backup, err);
+            if (!patch)
+                return 0;
+            put32(patch->after + 44, replacement);
+        }
+        patch = dt_plan_sector(plan, 0, err);
+        if (!patch)
+            return 0;
+        put32(patch->after + 44, replacement);
+        /* Root children use parent zero, so no dot/dotdot entries change. */
+    }
     return 1;
+}
+
+int dt_relocate_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtProgress progress, void *ctx,
+                     char *err)
+{
+    return relocate_plan(v, cluster, plan, 0, NULL, NULL, progress, ctx, err);
+}
+
+int dt_salvage_plan(DtVolume *v, dt_u32 cluster, DtPlan *plan, DtReport report, void *report_ctx,
+                    DtProgress progress, void *ctx, char *err)
+{
+    return relocate_plan(v, cluster, plan, 1, report, report_ctx, progress, ctx, err);
 }

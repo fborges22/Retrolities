@@ -29,6 +29,7 @@ int dt_map_build(DtVolume *v, dt_u32 first, dt_u32 count, DtMap *m, DtProgress c
 {
     unsigned i;
     dt_u32 start, n, c, x, bad = v->bits == 12 ? 0xff7 : (v->bits == 16 ? 0xfff7 : 0xffffff7);
+    memset(m, 0, sizeof(*m));
     if (first < 2 || first >= v->clusters + 2 || count > v->clusters + 2 - first ||
         !init(m, first, count, 0))
         return 0;
@@ -44,7 +45,7 @@ int dt_map_build(DtVolume *v, dt_u32 first, dt_u32 count, DtMap *m, DtProgress c
                 cell->free++;
             else if (x == bad)
                 cell->bad++;
-            else if ((x < 2 || x >= v->clusters + 2) && x < bad + 1)
+            else if ((x >= bad - 7 && x < bad) || ((x < 2 || x >= v->clusters + 2) && x < bad + 1))
                 cell->unreadable++;
             else
                 cell->used++;

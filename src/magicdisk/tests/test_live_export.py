@@ -109,14 +109,23 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-live-') as directory:
             assert image.read_bytes() == damaged
     if len(sys.argv) > 2:
         image.write_bytes(original)
-        for mode in ['gap', 'cancel', 'scan-cancel', 'fat-read', 'destination']:
+        for mode in ['gap', 'transient', 'retry-cancel', 'cancel', 'scan-cancel', 'fat-read', 'destination']:
             destination = root / mode
             destination.mkdir()
             subprocess.run([sys.argv[2], str(image), str(destination), mode, 'live'], check=True)
             directories = list(destination.iterdir())
-            if mode in ['gap', 'cancel']:
+            if mode in ['gap', 'transient', 'retry-cancel', 'cancel']:
                 files, manifest = exports(directories[0])
-                assert ('FINAL COMPLETE_WITH_GAPS' if mode == 'gap' else 'FINAL INCOMPLETE') in manifest
+                if mode == 'transient':
+                    assert 'FINAL COMPLETE ' in manifest and 'unreadable=0' in manifest
+                    assert 'attempt=2 result=failed' in manifest
+                    assert 'attempt=3 result=readable' in manifest
+                    assert 'UNREADABLE' not in manifest
+                    assert all(not data or data == b'MagicDisk LFN preservation test.\r\n' for data in files.values())
+                else:
+                    assert ('FINAL COMPLETE_WITH_GAPS' if mode == 'gap' else 'FINAL INCOMPLETE') in manifest
+                if mode == 'retry-cancel':
+                    assert 'unreadable=0' in manifest and all(not data for data in files.values())
                 if mode == 'gap':
                     assert 'UNREADABLE' in manifest
                     assert any(data and not any(data) for data in files.values())

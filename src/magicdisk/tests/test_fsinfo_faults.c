@@ -96,6 +96,11 @@ int main(int argc, char **argv)
     put16(image + 48, 1);
     put16(image + 50, 6);
     put16(image + 510, 0xaa55);
+    image[21] = 0xf8;
+    for (copy = 0; copy < 2; copy++) {
+        put32(image + (32 + copy * FAT_SIZE) * 512, 0x0ffffff8UL);
+        put32(image + (32 + copy * FAT_SIZE) * 512 + 4, 0x0fffffffUL);
+    }
     memcpy(image + 6 * 512, image, 512);
     for (copy = 0; copy < 2; copy++)
         put32(image + (32 + copy * FAT_SIZE) * 512 + 8, 0x0fffffffUL);

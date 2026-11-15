@@ -65,6 +65,17 @@ int main(void)
     word(image + 19, 2880);
     word(image + 22, 9);
     word(image + 510, 0xaa55);
+    image[21] = 0xf0;
+    {
+        unsigned fat_copy;
+
+        for (fat_copy = 0; fat_copy < 2; fat_copy++) {
+            unsigned char *header = image + (1 + fat_copy * 9) * 512;
+
+            header[0] = 0xf0;
+            header[1] = header[2] = 0xff;
+        }
+    }
     disk.ctx = NULL;
     disk.sectors = 2880;
     disk.read = read_sector;
@@ -131,6 +142,41 @@ int main(void)
     assert(map.cell[0].unreadable == 1 && map.cell[0].free == 0);
     assert(!dt_scan(&volume, &result, NULL, NULL));
     assert(!result.complete);
+    fail_sector = 0xffffffffUL;
+    /* At the largest FAT12/16 geometries, reserved markers can also be
+       numerically inside the volume's cluster range. They are never links. */
+    for (i = 0; i < 3; i++) {
+        unsigned bits = i == 0 ? 12 : i == 1 ? 16 : 32;
+        dt_u32 bad = bits == 12 ? 0xff7 : bits == 16 ? 0xfff7 : 0x0ffffff7UL;
+        dt_u32 value;
+
+        volume.bits = bits;
+        volume.clusters = bad - 3;
+        for (value = bad - 7; value <= bad + 1; value++) {
+            unsigned offset = bits == 12 ? 3 : bits == 16 ? 4 : 8;
+            unsigned char *entry = image + 512 + offset;
+
+            entry[0] = (unsigned char)value;
+            entry[1] = (unsigned char)(value >> 8);
+            if (bits == 32) {
+                entry[2] = (unsigned char)(value >> 16);
+                entry[3] = (unsigned char)(value >> 24);
+            }
+            volume.cache_sector = 0xffffffffUL;
+            assert(dt_map_build(&volume, 2, 1, &map, NULL, NULL));
+            assert(map.complete && map.cell[0].done == 1 && !map.cell[0].free);
+            assert(map.cell[0].unreadable == (unsigned)(value < bad));
+            assert(map.cell[0].bad == (unsigned)(value == bad));
+            assert(map.cell[0].used == (unsigned)(value > bad));
+        }
+    }
+    reads = 0;
+    assert(!dt_map_build(&volume, 1, 1, &map, NULL, NULL));
+    assert(!map.complete && !map.cells && !reads);
+    assert(!dt_map_build(&volume, 2, 0xffffffffUL, &map, NULL, NULL));
+    assert(!map.complete && !map.cells && !reads);
+    assert(!dt_map_build(&volume, 2, 0, &map, NULL, NULL));
+    assert(!map.complete && !map.cells && !reads);
     free(image);
     puts("PASS: map coverage, zoom ranges, I/O failures and cancellation");
     return 0;

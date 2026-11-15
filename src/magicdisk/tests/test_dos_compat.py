@@ -22,6 +22,15 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('exe', type=Path)
 parser.add_argument('boot', type=Path)
 parser.add_argument('--tree', action='store_true')
+parser.add_argument('--retry-faults', action='store_true')
+parser.add_argument('--timestamps', action='store_true')
+parser.add_argument('--deleted-recovery', action='store_true')
+parser.add_argument('--deleted-directories', action='store_true')
+parser.add_argument('--deleted-missing-dots', action='store_true')
+parser.add_argument('--relocate-native', action='store_true')
+parser.add_argument('--relocate-directory', action='store_true')
+parser.add_argument('--relocate-root', action='store_true')
+parser.add_argument('--relocate-torn-undo', action='store_true')
 parser.add_argument('--growth', action='store_true', help='repair a full native directory and verify DOS cache refresh')
 parser.add_argument('--shared-prefix', action='store_true', help='detach a shared directory tail while growing its unique prefix')
 parser.add_argument('--empty-alias', action='store_true', help='give fully shared directories independent empty chains')
@@ -31,6 +40,13 @@ parser.add_argument('--cache-workload', action='store_true')
 parser.add_argument('--mounted-bits', type=int, choices=[12, 16, 32], default=16)
 parser.add_argument('--kernel', choices=['msdos622', 'freedos', 'win98'], required=True)
 args = parser.parse_args()
+args.deleted_directories = args.deleted_directories or args.deleted_missing_dots
+args.deleted_recovery = args.deleted_recovery or args.deleted_directories
+args.relocate_native = args.relocate_native or args.relocate_directory or args.relocate_root
+if args.relocate_root and (args.mounted_bits != 32 or args.relocate_directory):
+    parser.error('--relocate-root requires FAT32 without --relocate-directory')
+if args.relocate_torn_undo and not args.relocate_native:
+    parser.error('--relocate-torn-undo requires a relocation test')
 args.empty_alias = args.empty_alias or args.alias_ui
 args.growth = args.growth or args.shared_prefix or args.empty_alias
 args.tree = args.tree or args.growth
@@ -39,6 +55,8 @@ if args.kernel == 'msdos622' and args.mounted_bits == 32:
     parser.error('MS-DOS 6.22 does not mount FAT32 volumes')
 if args.tree and (args.cache_workload or args.write_protected):
     parser.error('--tree requires writable media without --cache-workload')
+if args.relocate_native and (args.tree or args.cache_workload or args.write_protected):
+    parser.error('--relocate-native requires ordinary writable-volume tests')
 native_floppy = args.mounted_bits == 12
 if args.write_protected and (not native_floppy or args.cache_workload):
     parser.error('--write-protected requires FAT12 without --cache-workload')
@@ -163,6 +181,8 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
         repair_volume.write_bytes(tree_broken)
         put(volume, exe.with_name('SECTGET.EXE'))
     put(volume, exe)
+    if args.retry_faults:
+        put(volume, exe.with_name('RECFAULT.EXE'))
     put(volume, exe.with_name('KEYPLAY.EXE'))
     put(volume, exe.with_name('FREESPC.EXE'))
     put(volume, floppy, 'LFN.IMG')
@@ -269,6 +289,178 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
                     typing('SAVE REPORT TO A SEPARATE DISK', 'FINDVIEW.TXT') +
                     step('Report saved.', 'esc'))
     put(volume, text_file(root, 'FIND.KEY', finding_keys))
+    relocation_image = root / 'RELOC.IMG'
+    relocation_original = bytearray(marker.read_bytes())
+    relocation_layout = Layout(relocation_original, 12)
+    relocation_entry = next(offset for offset in relocation_layout.entries()
+                            if relocation_original[offset + 11] == 32)
+    if args.relocate_directory:
+        relocation_entry = relocation_layout.child()
+    relocation_cluster = relocation_layout.cluster(relocation_entry)
+    replacement = next(c for c in range(2, 1000) if relocation_layout.fat(c) == 0)
+    relocation_sector = relocation_layout.data_sector + (relocation_cluster - 2) * relocation_layout.spc
+    destination = relocation_layout.data_sector + (replacement - 2) * relocation_layout.spc
+    relocation_length = relocation_layout.spc * 512
+    relocation_original[destination * 512:destination * 512 + relocation_length] = bytes([0xa5]) * relocation_length
+    relocation_expected = bytearray(relocation_original)
+    relocation_expected[destination * 512:destination * 512 + relocation_length] = relocation_original[
+        relocation_sector * 512:relocation_sector * 512 + relocation_length]
+    set_fat(relocation_expected, 12, replacement, relocation_layout.fat(relocation_cluster))
+    set_fat(relocation_expected, 12, relocation_cluster, 0xff7)
+    struct.pack_into('<H', relocation_expected, relocation_entry + 26, replacement)
+    if args.relocate_directory:
+        struct.pack_into('<H', relocation_expected, destination * 512 + 26, replacement)
+        child = relocation_layout.cluster(relocation_layout.child(relocation_cluster))
+        child_offset = (relocation_layout.data_sector + (child - 2) * relocation_layout.spc) * 512
+        struct.pack_into('<H', relocation_expected, child_offset + 58, replacement)
+
+    relocation_image.write_bytes(relocation_original)
+    put(volume, relocation_image)
+    relocate_menu = (step('Filesystem check', 'down', True) +
+                     step('Surface read', 'down', True) +
+                     step('Retest marked bad', 'down', True) +
+                     step('Mark bad sector', 'enter', True) +
+                     typing('MARK BAD: ABSOLUTE DISK SECTOR', str(relocation_sector)))
+    relocation_keys = (diagnose() + relocate_menu +
+                       step('File data will move to a free cluster', 'esc') +
+                       step('Marker change cancelled;', 'f10') +
+                       step('Open image...', 'right', True) + relocate_menu +
+                       step('File data will move to a free cluster', 'enter') +
+                       typing('CONFIRM MARKER CHANGE', 'RELOCATE') +
+                       typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'RELOC.MDJ') +
+                       step('Repair verified.', 'f3') + step('Check finished.', 'f7') +
+                       typing('SAVE REPORT TO A SEPARATE DISK', 'RELOCTUI.TXT') +
+                       step('Report saved.', 'esc'))
+    if args.relocate_directory:
+        relocation_keys = relocation_keys.replace('File data will move to a free cluster', 'Directory data moves to a free cluster')
+    put(volume, text_file(root, 'RELOC.KEY', relocation_keys))
+    if args.relocate_native:
+        native_original = (floppy if native_floppy else repair_volume).read_bytes()
+        native_layout = Layout(native_original, args.mounted_bits)
+        native_entry = next(o for o in native_layout.entries() if native_original[o + 11] == 32)
+        if args.relocate_directory:
+            native_entry = native_layout.child()
+        native_cluster = native_layout.root if args.relocate_root else native_layout.cluster(native_entry)
+        native_replacement = next(c for c in range(2, 1000) if native_layout.fat(c) == 0)
+        native_source = native_layout.data_sector + (native_cluster - 2) * native_layout.spc
+        native_dest = native_layout.data_sector + (native_replacement - 2) * native_layout.spc
+        native_length = native_layout.spc * 512
+        native_size = struct.unpack_from('<I', native_original, native_entry + 28)[0]
+        native_payload = native_original[native_source * 512:native_source * 512 + native_size]
+        short = native_original[native_entry:native_entry + 8].decode('latin1').rstrip()
+        extension = native_original[native_entry + 8:native_entry + 11].decode('latin1').rstrip()
+        native_name = native_drive + ':\\' + short + ('.' + extension if extension else '')
+
+        if args.relocate_directory:
+            child_entry = native_layout.child(native_cluster)
+            child_cluster = native_layout.cluster(child_entry)
+            data_entry = next(o for o in native_layout.entries(child_cluster) if native_original[o + 11] == 32)
+            def short_name(entry):
+                base = native_original[entry:entry + 8].decode('latin1').rstrip()
+                ext = native_original[entry + 8:entry + 11].decode('latin1').rstrip()
+                return base + ('.' + ext if ext else '')
+            native_name = native_drive + ':\\' + '\\'.join(short_name(e) for e in [native_entry, child_entry, data_entry])
+            data_sector = native_layout.data_sector + (native_layout.cluster(data_entry) - 2) * native_layout.spc
+            size = struct.unpack_from('<I', native_original, data_entry + 28)[0]
+            native_payload = native_original[data_sector * 512:data_sector * 512 + size]
+        if args.relocate_root:
+            payload_sector = native_layout.data_sector + (native_layout.cluster(native_entry) - 2) * native_layout.spc
+            native_payload = native_original[payload_sector * 512:payload_sector * 512 + native_size]
+        native_expected = bytearray(native_original)
+        native_expected[native_dest * 512:native_dest * 512 + native_length] = native_original[
+            native_source * 512:native_source * 512 + native_length]
+        set_fat(native_expected, args.mounted_bits, native_replacement, native_layout.fat(native_cluster))
+        set_fat(native_expected, args.mounted_bits, native_cluster,
+                {12: 0xff7, 16: 0xfff7, 32: 0x0ffffff7}[args.mounted_bits])
+        if not args.relocate_root:
+            struct.pack_into('<H', native_expected, native_entry + 26, native_replacement & 0xffff)
+        if args.relocate_directory:
+            child_sector = native_layout.data_sector + (child_cluster - 2) * native_layout.spc
+            for entry_offset in [native_dest * 512, child_sector * 512 + 32]:
+                struct.pack_into('<H', native_expected, entry_offset + 26, native_replacement & 0xffff)
+                if args.mounted_bits == 32:
+                    struct.pack_into('<H', native_expected, entry_offset + 20, native_replacement >> 16)
+
+        if args.mounted_bits == 32:
+            if not args.relocate_root:
+                struct.pack_into('<H', native_expected, native_entry + 20, native_replacement >> 16)
+            else:
+                for sector in [0, 6]:
+                    struct.pack_into('<I', native_expected, sector * 512 + 44, native_replacement)
+            free_count = struct.unpack_from('<I', native_original, 512 + 488)[0]
+            for sector in [1, 7]:
+                struct.pack_into('<II', native_expected, sector * 512 + 488, free_count - 1, 2 if args.relocate_root else 0xffffffff)
+        native_sectors = {i // 512 for i in range(0, len(native_original), 512)
+                          if native_original[i:i + 512] != native_expected[i:i + 512]}
+        native_sectors.update(range(native_dest, native_dest + native_layout.spc))
+        native_sectors = sorted(native_sectors)
+        put(volume, exe.with_name('SECTGET.EXE'))
+
+
+    if args.deleted_recovery:
+        from deleted_fixture import fixture as deleted_fixture
+        deleted_image = root / 'DELETED.IMG'
+        if args.deleted_directories:
+            from deleted_directory_fixture import fixture as deleted_directory_fixture
+            deleted_original, deleted_expected, outer, inner = deleted_directory_fixture(deleted_image, 12, True)
+            put(volume, exe.with_name('RECFAULT.EXE'))
+            deleted_layout = Layout(deleted_original, 12)
+            deleted_dot_sector = deleted_layout.data_sector + (outer - 2) * deleted_layout.spc
+            if args.deleted_missing_dots:
+                data = bytearray(deleted_original)
+                layout = Layout(data, 12)
+                deleted_dot_evidence = []
+                for cluster, slot in [(outer, 0), (inner, 32)]:
+                    first = (layout.data_sector + (cluster - 2) * layout.spc) * 512
+                    data[first + slot:first + slot + 32] = bytes(32)
+                    deleted_dot_evidence.append(
+                        f'DIRECTORY_DOT_EVIDENCE start={cluster} self_valid={int(slot != 0)} '
+                        f'parent_valid={int(slot != 32)} confidence=UNVERIFIED raw_hex=' +
+                        data[first:first + 64].hex().upper())
+                deleted_original = bytes(data)
+                deleted_image.write_bytes(data)
+        else:
+            deleted_original, deleted_expected, deleted_evidence = deleted_fixture(deleted_image, 12)
+        put(volume, deleted_image)
+        deleted_keys = (diagnose() + step('Filesystem check', 'right', True) +
+                        step('Allocation map', 'right', True) +
+                        step('Save report...', 'down', True) +
+                        step('Export live files...', 'down', True) +
+                        step('Recover interrupted write...', 'down', True) +
+                        step('Recover deleted files...', 'enter', True) +
+                        step('RECOVER DELETED CANDIDATES', 'enter') +
+                        typing('RECOVERY DESTINATION DIRECTORY', 'C:\\DELETED') +
+                        step('DELETED-CANDIDATE RESULTS', 'enter') +
+                        step('Deleted candidates exported;', 'esc'))
+        put(volume, text_file(root, 'DELETED.KEY', deleted_keys))
+
+    if args.timestamps:
+        from test_timestamp_repair import fixture as timestamp_fixture
+        timestamp_image = root / 'TIMES.IMG'
+        timestamp_broken, timestamp_expected = timestamp_fixture(timestamp_image, 12)
+        put(volume, timestamp_image)
+        timestamp_keys = (diagnose() + step('Filesystem check', 'up', True) +
+                          step('Clear invalid timestamps', 'enter', True) +
+                          step('REVIEW INVALID TIMESTAMPS', 'enter') +
+                          typing('TYPE CLEAR TO RESET INVALID FIELDS', 'CLEAR') +
+                          typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'C:\\TIMES.MDJ') +
+                          step('Repair verified.', 'esc'))
+        put(volume, text_file(root, 'TIMES.KEY', timestamp_keys))
+
+    if args.relocate_root:
+        put(volume, exe.with_name('FILECOPY.EXE'))
+        root_keys = (step('Ready. F10 opens the menu', 'f10') +
+                     step('Open image...', 'down', True) + step('BIOS device...', 'down', True) +
+                     step('DOS volume...', 'enter', True) + typing('OPEN DOS VOLUME (DRIVE LETTER)', native_drive) +
+                     diagnose() + step('Filesystem check', 'down', True) +
+                     step('Surface read', 'down', True) + step('Retest marked bad', 'down', True) +
+                     step('Mark bad sector', 'enter', True) +
+                     typing('MARK BAD: VOLUME SECTOR', str(native_source)) +
+                     step('Root directory data moves;', 'enter') +
+                     typing('CONFIRM MARKER CHANGE', 'RELOCATE') +
+                     typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'C:\\NRELOC.MDJ') +
+                     step('Repair verified.', 'esc'))
+        put(volume, text_file(root, 'NROOT.KEY', root_keys))
     put(volume, text_file(root, 'LIVE.KEY', live_export_keys))
     warning_keys = live_export_keys.replace('Recovery finished with recorded gaps or damage.',
                                             'Recovery finished with recorded scan findings.')
@@ -277,6 +469,18 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
     exit_test.write_bytes(bytes.fromhex('b4 0d cd 21 ba f4 00 b0 10 ee eb fe'))
     put(volume, exit_test)
     commands = ['@echo off', 'C:', 'cd \\', 'ver > A:\\VERSION.TXT']
+    commands += ['KEYPLAY RELOC.KEY',
+                 'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                 'MAGICDSK --tui RELOC.IMG',
+                 'copy /b RELOC.IMG RLFIX.IMG > A:\\RLCOPY.TXT',
+                 'MAGICDSK RELOC.IMG --restore-journal RELOC.MDJ --apply > A:\\RLUNDO.TXT',
+                 'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                 f'MAGICDSK RELOC.IMG --relocate-cluster {relocation_cluster} --apply --journal RLCLI.MDJ > A:\\RLCLI.TXT',
+                 'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                 'copy /b RELOC.IMG RLCFIX.IMG > A:\\RLCCOPY.TXT',
+                 'MAGICDSK RELOC.IMG --restore-journal RLCLI.MDJ --apply > A:\\RLCUNDO.TXT',
+                 'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+
     for options, report, expected in [
         ('--drive C', 'MOUNT16', 0),
         ('--drive B', 'MOUNT12', 0 if native_floppy and not args.tree else 1),
@@ -360,6 +564,64 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
                 commands += [f'{free_query} > A:\\{name}F.TXT']
         commands += ['MAGICDSK ' + ('--bios 1' if native_floppy else '--bios 80 --partition 2') + ' > A:\\NBIOS.TXT',
                      'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+
+    if args.relocate_native:
+        commands += [f'copy /b {native_name} C:\\NRBEFORE.BIN > A:\\NRPRE.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     f'{free_query} > A:\\NRFREE0.TXT',
+                     f'MAGICDSK --drive {native_drive} --relocate-cluster {native_cluster} --apply --journal C:\\NRELOC.MDJ > A:\\NRELOC.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     f'copy /b {native_name} C:\\NRAFTER.BIN > A:\\NRPOST.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     f'{free_query} > A:\\NRFREE1.TXT',
+                     f'MAGICDSK --drive {native_drive} > A:\\NRCHECK.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+        for index, sector in enumerate(native_sectors):
+            absolute = sector if native_floppy else volume.stat().st_size // 512 + 63 + sector
+            device = '1' if native_floppy else '80'
+            commands += [f'SECTGET {device} {absolute} > C:\\NR{index}.BIN',
+                         'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+        undo_mode = ' --accept-torn' if args.relocate_torn_undo else ''
+        commands += [f'MAGICDSK --drive {native_drive} --restore-journal C:\\NRELOC.MDJ --apply{undo_mode} > A:\\NRUNDO.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     f'{free_query} > A:\\NRFREE2.TXT']
+
+    if args.retry_faults:
+        for directory, mode in [('RTRY', 'transient'), ('RGAP', 'gap'), ('RSTOP', 'retry-cancel')]:
+            commands += [f'md C:\\{directory}',
+                         f'RECFAULT MARK.IMG C:\\{directory} {mode} live > A:\\{directory}.TXT',
+                         'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+    if args.relocate_root:
+        post = next(i for i, line in enumerate(commands) if 'NRAFTER.BIN' in line)
+        commands[post + 2:post + 2] = [f'FILECOPY {native_name} C:\\NRAPI.BIN > A:\\NRAPI.TXT',
+                                      'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+        index = next(i for i, line in enumerate(commands) if '--relocate-cluster' in line and '--drive' in line)
+        commands[index:index + 1] = ['KEYPLAY NROOT.KEY',
+                                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                                     'MAGICDSK --tui']
+    if args.timestamps:
+        commands += ['MAGICDSK TIMES.IMG --clear-invalid-timestamps > A:\\TMPRE.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     'KEYPLAY TIMES.KEY',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     'MAGICDSK --tui TIMES.IMG',
+                     'MAGICDSK TIMES.IMG > A:\\TMCHECK.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     'COPY TIMES.IMG TIMEFIX.IMG > NUL',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     'MAGICDSK TIMES.IMG --restore-journal TIMES.MDJ --apply > A:\\TMUNDO.TXT',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+    if args.deleted_directories:
+        for directory, mode in [('DRTRY', 'directory-transient'), ('DRREAD', 'directory-read'),
+                                ('DRSTOP', 'directory-retry-cancel')]:
+            commands += [f'md C:\\{directory}',
+                         f'RECFAULT DELETED.IMG C:\\{directory} {mode} deleted {deleted_dot_sector} > A:\\{directory}.TXT',
+                         'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT']
+    if args.deleted_recovery:
+        commands += ['MD C:\\DELETED',
+                     'KEYPLAY DELETED.KEY',
+                     'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
+                     'MAGICDSK --tui DELETED.IMG']
     commands += ['KEYPLAY MAIN.KEY',
                  'if errorlevel 1 echo FAIL >> A:\\STATUS.TXT',
                  'MAGICDSK --tui LFN.IMG',
@@ -429,6 +691,15 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
             file.write(sector)
     repair_original = repair_volume.read_bytes()
     tree_original = floppy.read_bytes() if native_floppy else repair_original
+    if args.relocate_native and not native_floppy:
+        native_original = repair_original
+        native_expected[:512] = repair_original[:512]
+        if args.mounted_bits == 32:
+            native_expected[6 * 512:7 * 512] = repair_original[6 * 512:7 * 512]
+        if args.relocate_root:
+            for sector in [0, 6]:
+                struct.pack_into('<I', native_expected, sector * 512 + 44, native_replacement)
+
     if args.tree and not native_floppy:
         tree_expected[:512] = repair_original[:512]
         if args.mounted_bits == 32:
@@ -475,12 +746,23 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
     status = report('STATUS')
     reports = ['LIVE', 'MOUNT16', 'MOUNT12', 'BIOS16', 'IMAGE12', 'MARK', 'RETEST',
                'UNMARK', 'UNDONE1', 'UNDONE2']
+    if args.timestamps:
+        reports += ['TMPRE', 'TMCHECK', 'TMUNDO']
     if args.tree:
         reports += ['TPREVIEW', 'TCHECK', 'TUNDO'] + ([] if args.alias_ui else ['TAPPLY'])
     else:
         reports += ['NMARK', 'NBIOS'] if args.write_protected else ['NMARK', 'NRETEST', 'NUNMARK', 'NBIOS']
         if not args.cache_workload and not args.write_protected:
             reports += ['NUNDO1', 'NUNDO2']
+    if args.relocate_native:
+        if args.relocate_root:
+            reports += ['NRAPI']
+        reports += ['NRPRE', 'NRPOST', 'NRCHECK', 'NRUNDO', 'NRFREE0', 'NRFREE1', 'NRFREE2']
+    if args.relocate_root and 'FAIL' in status:
+        for sector in [1, 7]:
+            index = native_sectors.index(sector)
+            data = command('mtype', '-i', target, f'::/NR{index}.BIN').stdout[-512:]
+            print('Root relocation FSInfo', sector, struct.unpack_from('<II', data, 488))
     assert 'DONE' in status and 'FAIL' not in status, (
         status + '\n'.join(name + ': ' + report(name) for name in reports))
     for name in ['MOUNT16', 'BIOS16']:
@@ -507,6 +789,12 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
     assert 'Marked: 8  Readable: 8  Failed: 0' in finding_report, finding_report
     assert finding_report.count('BAD_READABLE ') == 8, finding_report
     assert command('mtype', '-i', target, '::/FIND.IMG').stdout == finding_original
+    relocation_report = command('mtype', '-i', target, '::/RELOCTUI.TXT').stdout.decode()
+    assert 'Bad clusters: 1' in relocation_report and 'Issues: 0' in relocation_report, relocation_report
+    assert command('mtype', '-i', target, '::/RLFIX.IMG').stdout == relocation_expected
+    assert command('mtype', '-i', target, '::/RLCFIX.IMG').stdout == relocation_expected
+    assert command('mtype', '-i', target, '::/RELOC.IMG').stdout == relocation_original
+
     assert 'Unreadable: 0' in surface_report and 'Inspection:' not in surface_report
     assert 'Omitted findings: 0' in surface_report
     assert command('mtype', '-i', target, '::/SFIX.IMG').stdout == space_expected
@@ -519,6 +807,23 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
     assert command('mtype', '-i', target, '::/WARN.IMG').stdout == warning_data
     restored = command('mtype' , '-i', target, '::/MARK.IMG').stdout
     assert hashlib.sha256(restored).hexdigest() == marker_hash
+    if args.retry_faults:
+        for directory in ['RTRY', 'RGAP', 'RSTOP']:
+            assert 'PASS: recovery fault handled' in report(directory), report(directory)
+            prefix = f'::/{directory}/REC00001/'
+            manifest = command('mtype', '-i', target, prefix + 'RECOVERY.TXT').stdout.decode()
+            data = command('mtype', '-i', target, prefix + 'F0000001.CHK').stdout
+            if directory == 'RTRY':
+                assert 'attempt=2 result=failed' in manifest and 'attempt=3 result=readable' in manifest
+                assert 'FINAL COMPLETE ' in manifest and 'UNREADABLE' not in manifest
+                assert data == b'MagicDisk LFN preservation test.\r\n'
+            elif directory == 'RGAP':
+                assert 'attempt=3 result=failed' in manifest and 'FINAL COMPLETE_WITH_GAPS' in manifest
+                assert data == bytes(len(b'MagicDisk LFN preservation test.\r\n'))
+            else:
+                assert 'FINAL INCOMPLETE' in manifest and 'UNREADABLE' not in manifest
+                assert not data
+
     if args.tree:
         assert command('mtype', '-i', target, '::/TREAD.BIN').stdout == tree_payload
         if args.growth:
@@ -574,11 +879,72 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
         print(f'PASS: {args.kernel} write-protected floppy fails without a prompt or changed sectors')
         raise SystemExit(0)
 
+    if args.timestamps:
+        assert report('TMPRE').count('CLEAR_TIMESTAMP') == 6
+        assert command('mtype', '-i', target, '::/TIMEFIX.IMG').stdout == timestamp_expected
+        assert command('mtype', '-i', target, '::/TIMES.IMG').stdout == timestamp_broken
+        print('PASS: timestamp CLI preview, TUI correction, clean scan and exact journal undo')
+
+    if args.deleted_recovery:
+        from test_deleted_recovery import verify as verify_deleted
+        recovered = root / 'deleted-output'
+        recovered.mkdir()
+        command('mcopy', '-s', '-i', target, '::/DELETED/REC00001', str(recovered))
+        if args.deleted_directories:
+            from test_deleted_directories import verify as verify_deleted_directories
+            verify_deleted_directories(recovered / 'REC00001', deleted_expected)
+            for directory, state in [('DRTRY', 'readable'), ('DRREAD', 'unreadable'),
+                                     ('DRSTOP', 'cancelled')]:
+                assert 'PASS: recovery fault handled' in report(directory)
+                retry_output = root / directory
+                retry_output.mkdir()
+                command('mcopy', '-s', '-i', target, f'::/{directory}/REC00001', str(retry_output))
+                manifest = (retry_output / 'REC00001' / 'RECOVERY.TXT').read_text()
+                if state == 'cancelled':
+                    assert 'FINAL INCOMPLETE' in manifest
+                else:
+                    assert f'DIRECTORY_RETRY entry_lba={deleted_dot_sector} attempts=3 state={state}' in manifest
+                    if state == 'readable':
+                        verify_deleted_directories(retry_output / 'REC00001', deleted_expected)
+                    else:
+                        assert 'stop=unreadable-dot-sector' in manifest and 'DELETED_BEGIN ' not in manifest
+            if args.deleted_missing_dots:
+                manifest = (recovered / 'REC00001' / 'RECOVERY.TXT').read_text()
+                for evidence in deleted_dot_evidence:
+                    assert evidence in manifest
+        else:
+            verify_deleted(recovered / 'REC00001', deleted_expected, deleted_evidence)
+        assert command('mtype', '-i', target, '::/DELETED.IMG').stdout == deleted_original
+        print('PASS: deleted-directory TUI traversal, nested files and source unchanged' if args.deleted_directories
+              else 'PASS: deleted-file TUI export, retained/free chains, live exclusion, raw LFN and source unchanged')
+
     def free_bytes(name):
         match = re.search(r'([0-9,]+) bytes free', report(name))
         assert match, report(name)
         return int(match[1].replace(',', ''))
 
+    if args.relocate_native:
+        free = [free_bytes(n) for n in ['NRFREE0', 'NRFREE1', 'NRFREE2']]
+        assert free[0] - free[1] == native_length and free[0] == free[2], free
+        assert '1 bad' in report('NRCHECK') and '0 issues' in report('NRCHECK'), report('NRCHECK')
+        if args.relocate_root:
+            print(report('NRAPI'))
+            assert command('mtype', '-i', target, '::/NRAPI.BIN').stdout == native_payload
+        for name in ['NRBEFORE.BIN', 'NRAFTER.BIN']:
+            assert command('mtype', '-i', target, '::/' + name).stdout == native_payload
+        for index, sector in enumerate(native_sectors):
+            data = command('mtype', '-i', target, f'::/NR{index}.BIN').stdout[-512:]
+            assert data == native_expected[sector * 512:(sector + 1) * 512], sector
+        journal = command('mtype', '-i', target, '::/NRELOC.MDJ').stdout
+        version, count = struct.unpack_from('<II', journal, 8)
+        assert version == (13 if args.relocate_root else 12 if args.relocate_directory else 11) and count == len(native_sectors)
+        for index in range(count):
+            record = journal[1088 + index * 1032:1088 + (index + 1) * 1032]
+            sector = struct.unpack_from('<I', record)[0]
+            assert sector in native_sectors
+            assert record[4:516] == native_original[sector * 512:(sector + 1) * 512]
+            assert record[516:1028] == native_expected[sector * 512:(sector + 1) * 512]
+        print(f'PASS: {args.kernel} FAT{args.mounted_bits} mounted relocation, DOS cached payload/free space, BIOS sectors and journal')
     before, marked, unmarked = [free_bytes(n) for n in ['FREE0', 'NMARKF', 'NUNMARKF']]
     assert before - marked == repair_original[13] * 512, (before, marked, unmarked, repair_original[13])
     assert before == unmarked

@@ -60,11 +60,38 @@ int dt_plan_init(DtPlan *plan, DtVolume *v, char *err)
     return 1;
 }
 
+/* Alias validity depends on the chosen OEM policy. Recompute from the policy
+   bound into the journal, then restore the caller's display/scan selection. */
+static int alias_policy_valid(int policy)
+{
+    unsigned previous = dt_oem_codepage();
+    int valid = policy >= 0 && dt_set_oem_codepage((unsigned)policy);
+
+    dt_set_oem_codepage(previous);
+    return valid;
+}
+
+static int alias_policy_plan(DtVolume *v, int policy, DtPlan *plan, DtProgress progress, void *ctx,
+                             char *err)
+{
+    unsigned previous = dt_oem_codepage();
+    int ok;
+
+    if (policy < 0 || !dt_set_oem_codepage((unsigned)policy))
+        return fail(err, "Alias journal has an unsupported OEM policy");
+    ok = dt_alias_plan(v, plan, progress, ctx, err);
+    dt_set_oem_codepage(previous);
+    return ok;
+}
+
 static dt_u32 sector_limit(const DtPlan *plan)
 {
     return (plan->kind == DT_REPAIR_CHAINS || plan->kind == DT_REPAIR_TREE ||
             plan->kind == DT_REPAIR_TREE_SOURCE || plan->kind == DT_REPAIR_ENTRIES ||
-            plan->kind == DT_REPAIR_RELOCATE)
+            plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
+            plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
+            (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
+             plan->kind == DT_REPAIR_RELOCATE_DIR || plan->kind == DT_REPAIR_RELOCATE_ROOT))
                ? plan->volume->total
                : plan->volume->root;
 }
@@ -78,8 +105,9 @@ DtPatch *dt_plan_sector(DtPlan *plan, dt_u32 sector, char *err)
     for (i = 0; i < plan->count; i++)
         if (plan->patch[i].sector == sector)
             return &plan->patch[i];
-    if ((!sector && plan->kind != DT_REPAIR_BOOT_PRIMARY) || sector >= limit ||
-        plan->count >= limit - 1) {
+    if ((!sector && plan->kind != DT_REPAIR_BOOT_PRIMARY &&
+         plan->kind != DT_REPAIR_RELOCATE_ROOT) ||
+        sector >= limit || plan->count >= limit - 1) {
         fail(err, "Repair plan exceeds sector bounds");
         return NULL;
     }
@@ -104,12 +132,24 @@ DtPatch *dt_plan_sector(DtPlan *plan, dt_u32 sector, char *err)
 
 int dt_plan_set_fat(DtPlan *plan, dt_u32 cluster, dt_u32 value, unsigned copy, char *err)
 {
-    DtVolume *v = plan->volume;
-    dt_u32 offset = v->bits == 12 ? cluster + cluster / 2 : cluster * (v->bits / 8);
-    unsigned i, bytes = v->bits == 32 ? 4 : 2;
-    dt_u32 old = 0;
+    DtVolume *v;
+    dt_u32 offset, maximum, old = 0;
+    unsigned i, bytes;
     DtPatch *patch;
 
+    if (!plan || !plan->volume)
+        return fail(err, "FAT update requires an initialized repair plan");
+    v = plan->volume;
+    if (v->bits != 12 && v->bits != 16 && v->bits != 32)
+        return fail(err, "FAT update requires a supported FAT format");
+    maximum = v->bits == 12 ? 0xfff : v->bits == 16 ? 0xffff : 0x0fffffffUL;
+    if (cluster < 2 || (dt_u64)cluster >= (dt_u64)v->clusters + 2 || cluster > maximum ||
+        copy >= v->copies || (!v->mirrored && copy != v->active) || value > maximum)
+        return fail(err, "FAT update is outside the selected allocation table or value range");
+    offset = v->bits == 12 ? cluster + cluster / 2 : cluster * (v->bits / 8);
+    bytes = v->bits == 32 ? 4 : 2;
+    if ((dt_u64)offset + bytes > (dt_u64)v->fatsz * 512)
+        return fail(err, "FAT entry extends beyond the allocation table");
     for (i = 0; i < bytes; i++) {
         patch = dt_plan_sector(plan, v->fat + copy * v->fatsz + (offset + i) / 512, err);
         if (!patch)
@@ -155,6 +195,26 @@ static int identity(DtPlan *plan, char *err)
     unsigned char buffer[512];
     DtVolume *v = plan->volume;
     int primary = plan->kind == DT_REPAIR_BOOT_PRIMARY;
+    const unsigned char *root_after = NULL;
+    unsigned i, j;
+
+    if (plan->kind == DT_REPAIR_RELOCATE_ROOT) {
+        if (v->bits != 32)
+            return fail(err, "Root relocation requires FAT32");
+        for (i = 0; i < plan->count; i++) {
+            DtPatch *patch = &plan->patch[i];
+
+            if (patch->sector)
+                continue;
+            if (memcmp(patch->before, plan->volume_boot, 512))
+                return fail(err, "Root relocation boot identity is inconsistent");
+            for (j = 0; j < 512; j++) {
+                if ((j < 44 || j >= 48) && patch->before[j] != patch->after[j])
+                    return fail(err, "Root relocation changes unrelated boot metadata");
+            }
+            root_after = patch->after;
+        }
+    }
 
     if (v->disk->sectors != plan->disk_sectors || v->start != plan->start ||
         v->total != plan->total)
@@ -167,10 +227,12 @@ static int identity(DtPlan *plan, char *err)
         return fail(err, "Primary recovery source changed or the journal is inconsistent");
     if (!v->disk->read(v->disk->ctx, 0, buffer) ||
         (memcmp(buffer, plan->disk_boot, 512) &&
-         !(primary && !v->start && !memcmp(buffer, plan->patch[0].after, 512))))
+         !((primary && !v->start && !memcmp(buffer, plan->patch[0].after, 512)) ||
+           (root_after && !v->start && !memcmp(buffer, root_after, 512)))))
         return fail(err, "Disk identity changed; no sectors written");
     if (!dt_read(v, 0, buffer) || (memcmp(buffer, plan->volume_boot, 512) &&
-                                   !(primary && !memcmp(buffer, plan->patch[0].after, 512))))
+                                   !((primary && !memcmp(buffer, plan->patch[0].after, 512)) ||
+                                     (root_after && !memcmp(buffer, root_after, 512)))))
         return fail(err, "Volume identity changed; no sectors written");
     return 1;
 }
@@ -192,17 +254,25 @@ static int save_journal(DtPlan *plan, const char *path, DtWriteProgress writing,
     memset(header, 0, sizeof(header));
     memcpy(header, "MDJNL001", 8);
     put32(header + 8,
-          plan->kind == DT_REPAIR_RELOCATE       ? 11
-          : plan->kind == DT_REPAIR_ENTRIES      ? 10
-          : plan->kind == DT_REPAIR_TREE_SOURCE  ? 9
-          : plan->kind == DT_REPAIR_TREE         ? 8
-          : plan->kind == DT_REPAIR_BOOT_PRIMARY ? 7
-          : plan->kind == DT_REPAIR_DIRECTORIES  ? 6
-          : plan->kind == DT_REPAIR_CHAINS       ? 5
-          : plan->kind == DT_REPAIR_LOST         ? 4
-          : plan->kind == DT_REPAIR_MIRROR       ? 3
-          : plan->kind == DT_REPAIR_BAD          ? 1
-                                                 : 2);
+          plan->kind == DT_REPAIR_LABELS          ? 19
+          : plan->kind == DT_REPAIR_ALIASES       ? 18
+          : plan->kind == DT_REPAIR_LFN           ? 17
+          : plan->kind == DT_REPAIR_SALVAGE       ? 16
+          : plan->kind == DT_REPAIR_FAT_HEADERS   ? 15
+          : plan->kind == DT_REPAIR_TIMESTAMPS    ? 14
+          : plan->kind == DT_REPAIR_RELOCATE_ROOT ? 13
+          : plan->kind == DT_REPAIR_RELOCATE_DIR  ? 12
+          : plan->kind == DT_REPAIR_RELOCATE      ? 11
+          : plan->kind == DT_REPAIR_ENTRIES       ? 10
+          : plan->kind == DT_REPAIR_TREE_SOURCE   ? 9
+          : plan->kind == DT_REPAIR_TREE          ? 8
+          : plan->kind == DT_REPAIR_BOOT_PRIMARY  ? 7
+          : plan->kind == DT_REPAIR_DIRECTORIES   ? 6
+          : plan->kind == DT_REPAIR_CHAINS        ? 5
+          : plan->kind == DT_REPAIR_LOST          ? 4
+          : plan->kind == DT_REPAIR_MIRROR        ? 3
+          : plan->kind == DT_REPAIR_BAD           ? 1
+                                                  : 2);
     put32(header + 12, plan->count);
     put32(header + 16, plan->disk_sectors);
     put32(header + 20, plan->start);
@@ -210,6 +280,8 @@ static int save_journal(DtPlan *plan, const char *path, DtWriteProgress writing,
     put32(header + 28, plan->cluster);
     put32(header + 32, (dt_u32)plan->mark_bad);
     put32(header + 36, (dt_u32)plan->kind);
+    if (plan->kind == DT_REPAIR_SALVAGE)
+        memcpy(header + 40, plan->gaps, sizeof(plan->gaps));
     crc = crc32(0, header, 60);
     crc = crc32(crc, plan->disk_boot, 512);
     crc = crc32(crc, plan->volume_boot, 512);
@@ -232,6 +304,9 @@ static int save_journal(DtPlan *plan, const char *path, DtWriteProgress writing,
         ok = 0;
     if (ok)
         ok = dt_file_commit_directory(path);
+    if (ok && plan->volume->disk->sync_journal &&
+        !plan->volume->disk->sync_journal(plan->volume->disk->ctx, path))
+        return fail(err, "Journal storage could not be flushed; no sectors written");
     if (ok && writing)
         writing(ctx, "Save journal", plan->count, plan->count);
     return ok ? 1 : fail(err, "Journal could not be committed; no sectors written");
@@ -263,7 +338,7 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         goto invalid;
     version = dt_dword(header + 8);
     kind = dt_dword(header + 36);
-    if ((version < 1 || version > 11) || kind > DT_REPAIR_RELOCATE ||
+    if ((version < 1 || version > 19) || kind > DT_REPAIR_LABELS ||
         (version == 1 && kind != DT_REPAIR_BAD) ||
         (version == 3 ? kind != DT_REPAIR_MIRROR : kind == DT_REPAIR_MIRROR) ||
         (version == 4 ? kind != DT_REPAIR_LOST : kind == DT_REPAIR_LOST) ||
@@ -273,12 +348,29 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         (version == 8 ? kind != DT_REPAIR_TREE : kind == DT_REPAIR_TREE) ||
         (version == 9 ? kind != DT_REPAIR_TREE_SOURCE : kind == DT_REPAIR_TREE_SOURCE) ||
         (version == 10 ? kind != DT_REPAIR_ENTRIES : kind == DT_REPAIR_ENTRIES) ||
-        (version == 11 ? kind != DT_REPAIR_RELOCATE : kind == DT_REPAIR_RELOCATE))
+        (version == 11 ? kind != DT_REPAIR_RELOCATE : kind == DT_REPAIR_RELOCATE) ||
+        (version == 12 ? kind != DT_REPAIR_RELOCATE_DIR : kind == DT_REPAIR_RELOCATE_DIR) ||
+        (version == 13 ? kind != DT_REPAIR_RELOCATE_ROOT : kind == DT_REPAIR_RELOCATE_ROOT) ||
+        (version == 14 ? kind != DT_REPAIR_TIMESTAMPS : kind == DT_REPAIR_TIMESTAMPS) ||
+        (version == 15 ? kind != DT_REPAIR_FAT_HEADERS : kind == DT_REPAIR_FAT_HEADERS) ||
+        (version == 16 ? kind != DT_REPAIR_SALVAGE : kind == DT_REPAIR_SALVAGE) ||
+        (version == 17 ? kind != DT_REPAIR_LFN : kind == DT_REPAIR_LFN) ||
+        (version == 18 ? kind != DT_REPAIR_ALIASES : kind == DT_REPAIR_ALIASES) ||
+        (version == 19 ? kind != DT_REPAIR_LABELS : kind == DT_REPAIR_LABELS))
         goto invalid;
     plan->kind = (int)kind;
+    if (kind == DT_REPAIR_SALVAGE) {
+        memcpy(plan->gaps, header + 40, sizeof(plan->gaps));
+        if (dt_dword(header + 56))
+            goto invalid;
+        for (i = v->spc; i < 128; i++) {
+            if (plan->gaps[i / 8] & (1u << (i % 8)))
+                goto invalid;
+        }
+    }
     count = dt_dword(header + 12);
     if (!count || count >= sector_limit(plan) ||
-        (kind != DT_REPAIR_TREE_SOURCE && dt_dword(header + 32) > 1))
+        (kind != DT_REPAIR_TREE_SOURCE && kind != DT_REPAIR_ALIASES && dt_dword(header + 32) > 1))
         goto invalid;
     /* Check the file extent before trusting an untrusted allocation count. */
     if (fseek(file, 0, SEEK_END) || (length = ftell(file)) < 0 ||
@@ -295,8 +387,14 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
     plan->total = dt_dword(header + 24);
     plan->cluster = dt_dword(header + 28);
     plan->mark_bad = (int)dt_dword(header + 32);
-    if (kind == DT_REPAIR_RELOCATE &&
+    if ((kind == DT_REPAIR_SALVAGE || kind == DT_REPAIR_RELOCATE ||
+         kind == DT_REPAIR_RELOCATE_DIR || kind == DT_REPAIR_RELOCATE_ROOT) &&
         (plan->cluster < 2 || plan->cluster >= v->clusters + 2 || plan->mark_bad))
+        goto invalid;
+    if (kind == DT_REPAIR_RELOCATE_ROOT && v->bits != 32)
+        goto invalid;
+    if (kind == DT_REPAIR_FAT_HEADERS &&
+        (plan->cluster || plan->mark_bad || count > (v->mirrored ? v->copies : 1)))
         goto invalid;
     if (kind == DT_REPAIR_FSINFO &&
         (v->bits != 32 || plan->cluster || plan->mark_bad || count > 2 || !v->fsinfo ||
@@ -312,8 +410,11 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
     if (kind == DT_REPAIR_LOST && (!plan->cluster || plan->cluster > v->clusters || plan->mark_bad))
         goto invalid;
     if ((kind == DT_REPAIR_CHAINS || kind == DT_REPAIR_DIRECTORIES || kind == DT_REPAIR_TREE ||
-         kind == DT_REPAIR_ENTRIES) &&
+         kind == DT_REPAIR_ENTRIES || kind == DT_REPAIR_TIMESTAMPS || kind == DT_REPAIR_LFN ||
+         kind == DT_REPAIR_LABELS) &&
         (!plan->cluster || plan->mark_bad))
+        goto invalid;
+    if (kind == DT_REPAIR_ALIASES && (!plan->cluster || !alias_policy_valid(plan->mark_bad)))
         goto invalid;
     if (kind == DT_REPAIR_BOOT_PRIMARY &&
         (v->bits != 32 || count != 1 || plan->mark_bad || !plan->cluster ||
@@ -332,13 +433,18 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
             goto invalid;
         patch->sector = dt_dword(record);
         /* File repairs may include directory sectors; boot-sector writes are excluded. */
-        if ((!patch->sector && kind != DT_REPAIR_BOOT_PRIMARY) ||
+        if ((!patch->sector && kind != DT_REPAIR_BOOT_PRIMARY && kind != DT_REPAIR_RELOCATE_ROOT) ||
             patch->sector >= sector_limit(plan))
             goto invalid;
         if (kind == DT_REPAIR_BOOT_PRIMARY &&
             (patch->sector || memcmp(record + 4, plan->volume_boot, 512) ||
              memcmp(record + 516, v->boot, 512) ||
              (!v->start && memcmp(plan->disk_boot, plan->volume_boot, 512))))
+            goto invalid;
+        if (kind == DT_REPAIR_FAT_HEADERS &&
+            (patch->sector < v->fat || patch->sector >= v->root ||
+             (patch->sector - v->fat) % v->fatsz ||
+             (!v->mirrored && patch->sector != v->fat + v->active * v->fatsz)))
             goto invalid;
         if (kind == DT_REPAIR_FSINFO &&
             (patch->sector >= v->fat ||
@@ -411,7 +517,7 @@ static int same_plan(const DtPlan *a, const DtPlan *b)
 {
     unsigned i;
     if (a->count != b->count || a->cluster != b->cluster || a->mark_bad != b->mark_bad ||
-        a->kind != b->kind)
+        a->kind != b->kind || memcmp(a->gaps, b->gaps, sizeof(a->gaps)))
         return 0;
     for (i = 0; i < a->count; i++) {
         if (a->patch[i].sector != b->patch[i].sector ||
@@ -462,11 +568,18 @@ int dt_plan_apply_ex(DtPlan *plan, const char *journal, DtProgress progress, voi
     if (!check)
         return fail(err, "Insufficient memory for repair validation");
     /* Recompute from current metadata after the review dialog, before any write. */
-    if (plan->kind == DT_REPAIR_RELOCATE) {
+    if (plan->kind == DT_REPAIR_SALVAGE) {
+        if (!dt_salvage_plan(v, plan->cluster, check, NULL, NULL, progress, ctx, err))
+            goto done;
+    } else if ((plan->kind == DT_REPAIR_RELOCATE || plan->kind == DT_REPAIR_RELOCATE_DIR ||
+                plan->kind == DT_REPAIR_RELOCATE_ROOT)) {
         if (!dt_relocate_plan(v, plan->cluster, check, progress, ctx, err))
             goto done;
     } else if (plan->kind == DT_REPAIR_BAD) {
         if (!dt_bad_plan(v, plan->cluster, plan->mark_bad, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_FAT_HEADERS) {
+        if (!dt_fat_header_plan(v, check, progress, ctx, err))
             goto done;
     } else if (plan->kind == DT_REPAIR_FSINFO) {
         if (!dt_fsinfo_plan(v, check, progress, ctx, err))
@@ -488,6 +601,18 @@ int dt_plan_apply_ex(DtPlan *plan, const char *journal, DtProgress progress, voi
             goto done;
     } else if (plan->kind == DT_REPAIR_TREE_SOURCE) {
         if (!dt_tree_source_plan(v, (unsigned)plan->mark_bad, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_ALIASES) {
+        if (!alias_policy_plan(v, plan->mark_bad, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_LABELS) {
+        if (!dt_label_plan(v, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_LFN) {
+        if (!dt_lfn_plan(v, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_TIMESTAMPS) {
+        if (!dt_timestamp_plan(v, check, progress, ctx, err))
             goto done;
     } else if (plan->kind == DT_REPAIR_ENTRIES) {
         if (!dt_entry_plan(v, check, progress, ctx, err))
@@ -611,7 +736,23 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
     disk.read = original_read;
     original.disk = &disk;
     original.cache_sector = 0xffffffffUL;
-    if (plan->kind == DT_REPAIR_RELOCATE)
+    if (plan->kind == DT_REPAIR_RELOCATE_ROOT &&
+        !dt_mount(&disk, plan->start, plan->total, &original, err)) {
+        dt_plan_free(expected);
+        return 0;
+    }
+
+    if (plan->kind == DT_REPAIR_SALVAGE)
+        ok = dt_salvage_plan(&original,
+                             plan->cluster,
+                             expected,
+                             NULL,
+                             NULL,
+                             progress ? restore_progress : NULL,
+                             &tracking,
+                             err);
+    else if ((plan->kind == DT_REPAIR_RELOCATE || plan->kind == DT_REPAIR_RELOCATE_DIR ||
+              plan->kind == DT_REPAIR_RELOCATE_ROOT))
         ok = dt_relocate_plan(
             &original, plan->cluster, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_TREE_SOURCE)
@@ -621,6 +762,23 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
                                  progress ? restore_progress : NULL,
                                  &tracking,
                                  err);
+    else if (plan->kind == DT_REPAIR_FAT_HEADERS)
+        ok = dt_fat_header_plan(
+            &original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_ALIASES)
+        ok = alias_policy_plan(&original,
+                               plan->mark_bad,
+                               expected,
+                               progress ? restore_progress : NULL,
+                               &tracking,
+                               err);
+    else if (plan->kind == DT_REPAIR_LABELS)
+        ok = dt_label_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_LFN)
+        ok = dt_lfn_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_TIMESTAMPS)
+        ok = dt_timestamp_plan(
+            &original, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_ENTRIES)
         ok = dt_entry_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_TREE)
@@ -642,7 +800,13 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
               : fail(err,
                      plan->kind == DT_REPAIR_CHAINS || plan->kind == DT_REPAIR_DIRECTORIES ||
                              plan->kind == DT_REPAIR_TREE || plan->kind == DT_REPAIR_TREE_SOURCE ||
-                             plan->kind == DT_REPAIR_ENTRIES || plan->kind == DT_REPAIR_RELOCATE
+                             plan->kind == DT_REPAIR_ENTRIES ||
+                             plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
+                             plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
+                             plan->kind == DT_REPAIR_FAT_HEADERS ||
+                             (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
+                              plan->kind == DT_REPAIR_RELOCATE_DIR ||
+                              plan->kind == DT_REPAIR_RELOCATE_ROOT)
                          ? "Tree-repair journal no longer matches directory ownership or allocation"
                          : "Reclaim journal no longer matches directory ownership or allocation");
 }
@@ -688,7 +852,11 @@ static int restore_plan(DtVolume *v, const char *journal, DtProgress progress, v
     if ((plan->kind == DT_REPAIR_LOST || plan->kind == DT_REPAIR_CHAINS ||
          plan->kind == DT_REPAIR_DIRECTORIES || plan->kind == DT_REPAIR_TREE ||
          plan->kind == DT_REPAIR_TREE_SOURCE || plan->kind == DT_REPAIR_ENTRIES ||
-         plan->kind == DT_REPAIR_RELOCATE) &&
+         plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
+         plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
+         plan->kind == DT_REPAIR_FAT_HEADERS ||
+         (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
+          plan->kind == DT_REPAIR_RELOCATE_DIR || plan->kind == DT_REPAIR_RELOCATE_ROOT)) &&
         !validate_owned_restore(plan, progress, ctx, err))
         goto done;
     if (torn && plan->count) {
@@ -726,7 +894,13 @@ static int restore_plan(DtVolume *v, const char *journal, DtProgress progress, v
             fail(err, "Restore read failed; preserve journal and retry");
             goto done;
         }
-        if (torn && observed[i - 1] != crc32(0, buffer, 512)) {
+        /* Windows 98's root-cache update also writes the backup BPB pointer.
+           After restoring the primary, accept only the exact expected backup
+           before-image; all other changes still require the observed CRC. */
+        if (torn && observed[i - 1] != crc32(0, buffer, 512) &&
+            !(plan->kind == DT_REPAIR_RELOCATE_ROOT && patch->sector == v->backup &&
+              plan->patch[plan->count - 1].sector == 0 && i < plan->count &&
+              !memcmp(buffer, patch->before, 512))) {
             fail(err, "Volume changed during restore; preserve journal and stop using volume");
             goto done;
         }

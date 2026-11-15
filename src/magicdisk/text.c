@@ -64,3 +64,71 @@ void dt_display_utf8(const char *input, char *output, size_t capacity, size_t sk
     }
     output[written] = 0;
 }
+
+/* Human-readable sizes are rounded; callers retain exact sector ranges nearby. */
+void dt_format_sectors(dt_u32 sectors, char *output, size_t capacity)
+{
+    static const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
+    dt_u64 bytes = (dt_u64)sectors * 512, scale = 1, tenths;
+    unsigned unit = 0;
+    char text[32];
+    size_t length;
+
+    if (!capacity)
+        return;
+    while (unit < 4 && bytes >= scale * 1024) {
+        scale *= 1024;
+        unit++;
+    }
+    tenths = (bytes * 10 + scale / 2) / scale;
+    if (unit < 4 && tenths >= 10240) {
+        scale *= 1024;
+        unit++;
+        tenths = (bytes * 10 + scale / 2) / scale;
+    }
+    if (!unit)
+        sprintf(text, "%lu B", (unsigned long)bytes);
+    else
+        sprintf(text,
+                "%lu.%lu %s",
+                (unsigned long)(tenths / 10),
+                (unsigned long)(tenths % 10),
+                units[unit]);
+    length = strlen(text);
+    if (length >= capacity)
+        length = capacity - 1;
+    memcpy(output, text, length);
+    output[length] = 0;
+}
+
+/* Parse the same unsigned grammar on 32-bit DOS and 64-bit native hosts.
+   Failure leaves the caller's value untouched. Hex prefixes are optional only
+   when the caller explicitly requests base 16. Signs and spaces are invalid. */
+int dt_parse_u32(const char *text, unsigned base, dt_u32 *value)
+{
+    dt_u32 parsed = 0;
+    unsigned digit;
+
+    if (!text || !value || (base != 10 && base != 16))
+        return 0;
+    if (base == 16 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X'))
+        text += 2;
+    if (!*text)
+        return 0;
+    while (*text) {
+        if (*text >= '0' && *text <= '9')
+            digit = (unsigned)(*text - '0');
+        else if (*text >= 'a' && *text <= 'f')
+            digit = (unsigned)(*text - 'a' + 10);
+        else if (*text >= 'A' && *text <= 'F')
+            digit = (unsigned)(*text - 'A' + 10);
+        else
+            return 0;
+        if (digit >= base || parsed > (0xffffffffUL - digit) / base)
+            return 0;
+        parsed = parsed * base + digit;
+        text++;
+    }
+    *value = parsed;
+    return 1;
+}

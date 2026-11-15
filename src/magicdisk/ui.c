@@ -4,14 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <errno.h>
 
 #ifdef __WATCOMC__
 #include <conio.h>
 #include <i86.h>
 #include <dos.h>
 
-#define LOG_MAX 512
 #define NAV_LEFT (256 + 75)
 #define NAV_RIGHT (256 + 77)
 #define NAV_UP (256 + 72)
@@ -49,12 +47,13 @@ typedef struct {
     unsigned count, selected, cell, drive, recovery_source;
     int opened, bios, mounted, scanned, retested, preview, busy;
     int surfaced, surface_complete;
-    dt_u32 surface_tested, surface_failed;
+    dt_u32 surface_tested, surface_failed, surface_first, surface_count;
     DtMap map;
     DtResult result;
     DtRetest retest;
-    Finding log[LOG_MAX];
-    unsigned log_count, omitted;
+    Finding *log;
+    unsigned log_count, log_capacity, omitted;
+    int log_full;
     char source[128], status[160], phase[40];
     dt_u32 done, total;
     clock_t painted;
@@ -290,6 +289,9 @@ static void draw_map(void)
     if (count) {
         dt_u32 lba = ui.map.surface ? first : ui.volume.data + (first - 2) * ui.volume.spc;
         dt_u32 sectors = ui.map.surface ? count : count * ui.volume.spc;
+        char size[32];
+
+        dt_format_sectors(sectors, size, sizeof(size));
         sprintf(s,
                 "Block %u  %s %lu-%lu",
                 ui.cell + 1,
@@ -298,15 +300,20 @@ static void draw_map(void)
                 (unsigned long)(first + count - 1));
         text(2, 19, BRIGHT, s);
         sprintf(s,
-                "Disk LBA %lu-%lu  |  %lu KiB  |  Enter: details  +: zoom  -: whole volume",
+                "Disk LBA %lu-%lu  |  %s",
                 (unsigned long)(ui.volume.start + lba),
                 (unsigned long)(ui.volume.start + lba + sectors - 1),
-                (unsigned long)(sectors / 2));
+                size);
         text(2, 20, WORK, s);
+        text(2,
+             21,
+             CYAN,
+             ui.map.surface ? "Enter: details   F5: allocation map   O: owner   T: retest"
+                            : "Enter: details   +: zoom   -: whole volume   O: owner   T: retest");
     }
 }
 
-static void draw(void)
+static void draw_workspace(void)
 {
     unsigned i, percent;
     char s[160];
@@ -322,16 +329,17 @@ static void draw(void)
     text(62, 1, CHROME, "F10 Menu  F1 Help");
     text(2, 3, BRIGHT, ui.opened ? ui.source : "Welcome to MagicDisk");
     if (ui.mounted) {
-        sprintf(
-            s,
-            "Volume %u/%u   FAT%u   %lu %s   %u sectors/cluster   LBA %lu",
-            ui.selected + 1,
-            ui.count,
-            ui.volume.bits,
-            (unsigned long)(ui.volume.total < 20480 ? ui.volume.total / 2 : ui.volume.total / 2048),
-            ui.volume.total < 20480 ? "KiB" : "MiB",
-            ui.volume.spc,
-            (unsigned long)ui.volume.start);
+        char size[32];
+
+        dt_format_sectors(ui.volume.total, size, sizeof(size));
+        sprintf(s,
+                "Volume %u/%u  FAT%u  %s  %u sec/cluster  LBA %lu",
+                ui.selected + 1,
+                ui.count,
+                ui.volume.bits,
+                size,
+                ui.volume.spc,
+                (unsigned long)ui.volume.start);
         text(2, 4, CYAN, s);
         draw_map();
     } else {
@@ -350,6 +358,22 @@ static void draw(void)
         fill(23, 22, (int)(percent * 44 / 100), 219, CYAN);
         sprintf(s, ui.busy == 2 ? "%3u%% Wait" : "%3u%% Esc", percent);
         text(69, 22, BRIGHT, s);
+    } else if (ui.surfaced) {
+        sprintf(s,
+                "%s | %lu/%lu read | %lu failed",
+                ui.surface_count == ui.volume.total
+                    ? (ui.surface_complete ? "SURFACE COMPLETE" : "SURFACE INCOMPLETE")
+                    : (ui.surface_complete ? "RANGE COMPLETE" : "RANGE INCOMPLETE"),
+                (unsigned long)ui.surface_tested,
+                (unsigned long)ui.surface_count,
+                (unsigned long)ui.surface_failed);
+        text(2, 22, !ui.surface_complete || ui.surface_failed ? AMBER : GREEN, s);
+    } else if (ui.preview) {
+        text(2,
+             22,
+             AMBER,
+             ui.preview == 6 ? "SALVAGE PREVIEW: missing sectors become ZERO. No repair applied."
+                             : "REPAIR PREVIEW: proposed changes only. No repair applied.");
     } else if (ui.retested) {
         sprintf(s,
                 "%s  |  %lu marked  %lu readable  %lu still failing",
@@ -357,7 +381,7 @@ static void draw(void)
                 (unsigned long)ui.retest.marked,
                 (unsigned long)ui.retest.readable,
                 (unsigned long)ui.retest.failed);
-        text(2, 22, ui.retest.failed ? AMBER : CYAN, s);
+        text(2, 22, !ui.retest.complete || ui.retest.failed ? AMBER : CYAN, s);
     } else if (ui.scanned) {
         sprintf(s,
                 "%s  |  %lu files  %lu directories  %lu issues  %lu lost clusters",
@@ -366,7 +390,9 @@ static void draw(void)
                 (unsigned long)ui.result.dirs,
                 (unsigned long)ui.result.errors,
                 (unsigned long)ui.result.lost_clusters);
-        text(2, 22, ui.result.errors ? AMBER : GREEN, s);
+        text(2, 22, !ui.result.complete || ui.result.errors ? AMBER : GREEN, s);
+    } else if (ui.mounted) {
+        text(2, 22, MUTED, "No current check results. F3 checks files; F4 reads the surface.");
     }
     fill(0, 23, 80, ' ', CHROME);
     text(1, 23, CHROME, ui.status);
@@ -377,6 +403,11 @@ static void draw(void)
          ui.busy == 2
              ? "Transaction in progress - cancellation disabled until completion"
              : "F2 Vol F3 Check F4 Surface F5 Map F6 Find F7 Save F8 Bytes F10 Menu Esc Exit");
+}
+
+static void draw(void)
+{
+    draw_workspace();
     flush();
 }
 
@@ -474,7 +505,10 @@ static void clear_findings(void)
 
     for (i = 0; i < ui.log_count; i++)
         free(ui.log[i].message);
-    ui.log_count = ui.omitted = 0;
+    free(ui.log);
+    ui.log = NULL;
+    ui.log_count = ui.log_capacity = ui.omitted = 0;
+    ui.log_full = 0;
     ui.preview = 0;
     ui.surfaced = 0;
 }
@@ -483,18 +517,33 @@ static void finding(void *ctx, const char *code, dt_u32 where, const char *messa
 {
     Finding *f;
     (void)ctx;
-    if (ui.log_count == LOG_MAX) {
+    if (!ui.log_full && ui.log_count == ui.log_capacity) {
+        unsigned capacity = ui.log_capacity ? ui.log_capacity * 2 : 128;
+        Finding *grown = NULL;
+
+        if (capacity > ui.log_capacity && (dt_u64)capacity * sizeof(*grown) <= (size_t)-1)
+            grown = (Finding *)realloc(ui.log, (size_t)capacity * sizeof(*grown));
+        if (!grown)
+            ui.log_full = 1;
+        else {
+            ui.log = grown;
+            ui.log_capacity = capacity;
+        }
+    }
+    if (ui.log_full) {
         ui.omitted++;
         return;
     }
     f = &ui.log[ui.log_count];
     f->message = (char *)malloc(strlen(message) + 1);
     if (!f->message) {
+        ui.log_full = 1;
         ui.omitted++;
         return;
     }
     strcpy(f->message, message);
     strncpy(f->code, code, sizeof(f->code) - 1);
+    f->code[sizeof(f->code) - 1] = 0;
     ui.log_count++;
     f->where = where;
 }
@@ -551,6 +600,23 @@ static int reopen_target(const char *journal, char *err)
 {
     if (ui.bios == 2)
         return dt_dos_open(&ui.disk, ui.drive, journal, err);
+    if (ui.bios == 1) {
+        DtVolume current;
+
+        if (!dt_bios_open(&ui.disk, ui.drive, err))
+            return 0;
+        if (journal &&
+            (!mount_recovery(&ui.disk,
+                             ui.partitions[ui.selected].start,
+                             ui.partitions[ui.selected].size,
+                             &current,
+                             err) ||
+             !dt_bios_enable_writes(&ui.disk, current.start, current.total, journal, err))) {
+            dt_bios_close(&ui.disk);
+            return 0;
+        }
+        return 1;
+    }
     return journal ? dt_image_open_write(&ui.disk, ui.source, err)
                    : dt_image_open(&ui.disk, ui.source, err);
 }
@@ -664,8 +730,8 @@ static void select_volume(void)
 static void select_device(void)
 {
     unsigned drives[DT_BIOS_MAX], count, selected = 0, top = 0, i;
-    char err[160], path[16], *end;
-    unsigned long drive;
+    char err[160], path[16];
+    dt_u32 drive;
 
     if (!dt_bios_devices(drives, &count, err)) {
         strcpy(ui.status, err);
@@ -721,8 +787,7 @@ static void select_device(void)
         } else {
             if (!prompt(" BIOS DEVICE: 00=A, 01=B, 80=FIRST HARD DISK ", path, sizeof(path)))
                 continue;
-            drive = strtoul(path, &end, 16);
-            if (!*path || *end || drive > 255) {
+            if (!dt_parse_u32(path, 16, &drive) || drive > 255) {
                 strcpy(ui.status, "Enter a BIOS drive number in hex, for example 00 or 80.");
                 continue;
             }
@@ -735,10 +800,14 @@ static void select_device(void)
 }
 
 static void sector_viewer(dt_u32 sector);
+static void change_bad_marker(int mark_bad, dt_u32 selected);
+static void recover_files(int live, dt_u32 cluster);
+static int finding_repair(const char *code, int run);
 
 static int finding_sector(const Finding *f, dt_u32 *sector)
 {
-    if (!strcmp(f->code, "SURFACE_READ") || !strcmp(f->code, "BAD_SECTOR")) {
+    if (!strcmp(f->code, "SURFACE_READ") || !strcmp(f->code, "BAD_SECTOR") ||
+        !strcmp(f->code, "SALVAGE_GAP")) {
         *sector = f->where;
     } else if (!strcmp(f->code, "BAD_READABLE") || !strcmp(f->code, "BAD_UNREADABLE")) {
         if (!ui.mounted || f->where < 2 || f->where >= ui.volume.clusters + 2)
@@ -750,13 +819,30 @@ static int finding_sector(const Finding *f, dt_u32 *sector)
     return *sector < ui.disk.sectors;
 }
 
+/* Findings use absolute LBAs, including when a DOS volume starts at zero.
+   Only data clusters can carry FAT bad markers; metadata stays inspect-only. */
+static int finding_marker_action(const Finding *finding, dt_u32 *sector)
+{
+    dt_u32 cluster, value, bad;
+
+    if (!ui.mounted || ui.volume.boot_source || !finding_sector(finding, sector) ||
+        *sector < ui.volume.start + ui.volume.data ||
+        *sector - ui.volume.start - ui.volume.data >= ui.volume.clusters * ui.volume.spc)
+        return 0;
+    cluster = 2 + (*sector - ui.volume.start - ui.volume.data) / ui.volume.spc;
+    if (!dt_fat(&ui.volume, cluster, &value))
+        return 0;
+    bad = ui.volume.bits == 12 ? 0xff7 : ui.volume.bits == 16 ? 0xfff7 : 0x0ffffff7UL;
+    return value == bad ? -1 : 1;
+}
+
 static void findings(void)
 {
     unsigned top = 0, selected = 0, i, horizontal = 0;
     for (;;) {
         char s[100];
-        int k;
-        dt_u32 sector;
+        int k, marker = 0;
+        dt_u32 sector, marker_sector = 0;
 
         draw();
         box(2,
@@ -764,15 +850,16 @@ static void findings(void)
             76,
             18,
             ui.surfaced       ? " SURFACE READ FINDINGS "
+            : ui.preview == 8 ? " DOS ALIAS REPAIR PREVIEW "
+            : ui.preview == 7 ? " LONG-NAME CLEANUP PREVIEW "
+            : ui.preview == 6 ? " FILE SALVAGE PREVIEW "
+            : ui.preview == 5 ? " TIMESTAMP PREVIEW "
             : ui.preview == 4 ? " DIRECTORY-ENTRY PREVIEW "
             : ui.preview == 3 ? " COMBINED-REPAIR PREVIEW "
             : ui.preview == 2 ? " DIRECTORY-REPAIR PREVIEW "
             : ui.preview      ? " FILE-REPAIR PREVIEW "
                               : " INSPECTION FINDINGS ");
-        sprintf(s,
-                "%u stored | %u omitted | Up/Down rows | Left/Right text | Esc closes",
-                ui.log_count,
-                ui.omitted);
+        sprintf(s, "Stored: %u  Omitted: %u  Arrows: browse  Esc: close", ui.log_count, ui.omitted);
         text(4, 5, CYAN, s);
         if (!ui.log_count && !ui.scanned && !ui.retested && !ui.preview && !ui.surfaced)
             text(5, 9, WORK, "Run Diagnose > Filesystem check to collect findings.");
@@ -782,8 +869,9 @@ static void findings(void)
                  GREEN,
                  ui.surfaced && !ui.surface_complete
                      ? "Surface read incomplete; no failures in the tested sectors."
-                 : ui.preview ? "No repairs are needed."
-                              : "No issues found by the completed checks.");
+                 : ui.preview == 6 ? "No missing sectors observed; relocation is still proposed."
+                 : ui.preview      ? "No repairs are needed."
+                                   : "No issues found by the completed checks.");
         for (i = top; i < ui.log_count && i < top + 6; i++) {
             Finding *f = &ui.log[i];
             if (!strcmp(f->code, "BAD_READABLE"))
@@ -804,16 +892,36 @@ static void findings(void)
             dt_display_utf8(f->message, s, 71, horizontal);
             text(4, 8 + (i - top) * 2, WORK, s);
         }
+        if (selected < ui.log_count)
+            marker = finding_marker_action(&ui.log[selected], &marker_sector);
+        if (marker)
+            text(4, 19, CYAN, "R: find and export the regular file owning this sector");
+        else if (selected < ui.log_count && finding_repair(ui.log[selected].code, 0))
+            text(4, 19, CYAN, "P: review volume repair for this type of finding");
         text(4,
              20,
              CYAN,
-             selected < ui.log_count && finding_sector(&ui.log[selected], &sector)
+             marker > 0   ? "F8: inspect sector | M: review marking this cluster bad"
+             : marker < 0 ? "F8: inspect sector | U: retest and review unmarking this cluster"
+             : selected < ui.log_count && finding_sector(&ui.log[selected], &sector)
                  ? "F8: inspect selected sector (read-only)"
                  : "Selected finding has no direct sector-viewer location.");
         flush();
         k = key();
         if (k == 27 || k == 13)
             return;
+        if ((k == 'p' || k == 'P') && selected < ui.log_count &&
+            finding_repair(ui.log[selected].code, 1))
+            return;
+        if (marker && (k == 'r' || k == 'R')) {
+            recover_files(1,
+                          2 + (marker_sector - ui.volume.start - ui.volume.data) / ui.volume.spc);
+            return;
+        }
+        if ((marker > 0 && (k == 'm' || k == 'M')) || (marker < 0 && (k == 'u' || k == 'U'))) {
+            change_bad_marker(marker > 0, marker_sector);
+            return;
+        }
         if (k == KEY_F8 && selected < ui.log_count && finding_sector(&ui.log[selected], &sector))
             sector_viewer(sector);
         if (k == NAV_UP && selected)
@@ -851,9 +959,11 @@ static void save_report(void)
     }
     if (!prompt(" SAVE REPORT TO A SEPARATE DISK ", path, sizeof(path)))
         return;
-    if (ui.bios == 2 && ui.disk.separate_destination &&
+    if (ui.bios && ui.disk.separate_destination &&
         !ui.disk.separate_destination(ui.disk.ctx, path)) {
-        strcpy(ui.status, "Save reports on a different volume from the source.");
+        strcpy(ui.status,
+               ui.bios == 1 ? "Save reports on a different physical disk."
+                            : "Save reports on a different volume from the source.");
         return;
     }
     f = dt_file_create(path);
@@ -867,30 +977,44 @@ static void save_report(void)
             ui.source,
             (unsigned long)ui.volume.start,
             ui.volume.bits);
+    fprintf(f, "OEM code page: %u (0 means unknown)\n", dt_oem_codepage());
     if (ui.surfaced) {
         fprintf(f,
                 "Surface read: %s\nSectors tested: %lu of %lu  Unreadable: %lu\n"
                 "Finding locations are absolute disk LBAs. No sectors were written.\n",
                 ui.surface_complete ? "complete" : "INCOMPLETE",
                 (unsigned long)ui.surface_tested,
-                (unsigned long)ui.volume.total,
+                (unsigned long)ui.surface_count,
                 (unsigned long)ui.surface_failed);
+        fprintf(f,
+                "Scope: %s\nVolume sectors: %lu-%lu\nDisk LBAs: %lu-%lu\n",
+                ui.surface_count == ui.volume.total ? "whole volume" : "selected map block",
+                (unsigned long)ui.surface_first,
+                (unsigned long)(ui.surface_first + ui.surface_count - 1),
+                (unsigned long)(ui.volume.start + ui.surface_first),
+                (unsigned long)(ui.volume.start + ui.surface_first + ui.surface_count - 1));
+    } else if (ui.preview == 6) {
+        fprintf(f,
+                "File salvage preview: unreadable sectors will become ZERO in the replacement.\n"
+                "Missing bytes are NOT recovered. No repair applied.\n");
     } else if (ui.preview) {
         fprintf(f,
                 "%s-repair preview: proposed metadata changes only. No repair applied.\n",
-                ui.preview == 4   ? "Directory-entry"
+                ui.preview == 5   ? "Timestamp"
+                : ui.preview == 4 ? "Directory-entry"
                 : ui.preview == 3 ? "Combined"
                 : ui.preview == 2 ? "Directory"
                                   : "File");
     } else if (ui.retested) {
         fprintf(f,
                 "Bad-cluster retest: %s\nMarked: %lu  Readable: %lu  Failed: %lu\n"
-                "Sectors read: %lu\nBad markers were not changed.\n",
+                "Sectors attempted: %lu  Failed reads: %lu\nBad markers were not changed.\n",
                 ui.retest.complete ? "complete" : "INCOMPLETE",
                 (unsigned long)ui.retest.marked,
                 (unsigned long)ui.retest.readable,
                 (unsigned long)ui.retest.failed,
-                (unsigned long)ui.retest.tested_sectors);
+                (unsigned long)ui.retest.tested_sectors,
+                (unsigned long)ui.retest.failed_sectors);
     } else {
         fprintf(f,
                 "Inspection: %s\nFiles: %lu  Directories: %lu\n"
@@ -908,9 +1032,16 @@ static void save_report(void)
             f, "%s %lu: %s\n", ui.log[i].code, (unsigned long)ui.log[i].where, ui.log[i].message);
     fprintf(f, "Omitted findings: %u\n", ui.omitted);
     i = ferror(f);
+    if (!dt_file_commit(f))
+        i = 1;
     if (fclose(f))
         i = 1;
-    strcpy(ui.status, i ? "Report write failed." : "Report saved.");
+    if (!dt_file_commit_directory(path))
+        i = 1;
+    strcpy(ui.status,
+           i            ? "Report write or commit failed."
+           : ui.omitted ? "Report saved with omitted findings; see the omitted count."
+                        : "Report saved.");
 }
 
 static dt_u32 selected_sector(void)
@@ -924,6 +1055,134 @@ static dt_u32 selected_sector(void)
         return ui.volume.start;
     return ui.volume.start +
            (ui.map.surface ? first : ui.volume.data + (first - 2) * ui.volume.spc);
+}
+
+typedef struct {
+    dt_u32 target;
+    DtFile file;
+    char *path;
+} OwnerLookup;
+
+static int owner_visit(void *ctx, const DtFile *file)
+{
+    OwnerLookup *owner = (OwnerLookup *)ctx;
+    dt_u32 cluster = file->start, next, index;
+
+    for (index = 0; index < file->clusters; index++) {
+        if (!(index & 31) && !progress(NULL, "Locate cluster owner", index, file->clusters))
+            return 0;
+        if (cluster == owner->target && !owner->path) {
+            const char *path = *file->path ? file->path : "/";
+
+            owner->path = (char *)malloc(strlen(path) + 1);
+            if (!owner->path)
+                return 0;
+            strcpy(owner->path, path);
+            owner->file = *file;
+            owner->file.path = owner->path;
+        }
+        if (index + 1 < file->clusters) {
+            if (!dt_fat(&ui.volume, cluster, &next))
+                return 0;
+            cluster = next;
+        }
+    }
+    return 1;
+}
+
+static void owner_view(dt_u32 sector)
+{
+    OwnerLookup owner;
+    DtResult result;
+    char saved_status[160], line[100];
+    size_t horizontal = 0;
+    unsigned row;
+    int complete;
+
+    if (!ui.mounted || sector < ui.volume.start + ui.volume.data ||
+        sector - ui.volume.start - ui.volume.data >= ui.volume.clusters * ui.volume.spc) {
+        const char *lines[] = {
+            "This sector is outside the selected volume's data clusters.",
+            "Boot sectors, FATs and fixed root directories have no data-cluster owner."};
+
+        modal(" NOT A DATA CLUSTER ", lines, 2);
+        return;
+    }
+    memset(&owner, 0, sizeof(owner));
+    owner.target = 2 + (sector - ui.volume.start - ui.volume.data) / ui.volume.spc;
+    strcpy(saved_status, ui.status);
+    strcpy(ui.status, "Locating the first catalog owner. Esc cancels the lookup.");
+    ui.busy = 1;
+    ui.volume.cache_sector = 0xffffffffUL;
+    complete = dt_scan_files(&ui.volume, &result, owner_visit, &owner, NULL, NULL, progress, NULL);
+    ui.busy = 0;
+    strcpy(ui.status, saved_status);
+    for (;;) {
+        int k;
+
+        draw();
+        box(2, 4, 76, 19, " CLUSTER OWNER ");
+        sprintf(line,
+                "Cluster %lu  |  Selected disk LBA %lu",
+                (unsigned long)owner.target,
+                (unsigned long)sector);
+        text(4, 5, BRIGHT, line);
+        if (owner.path) {
+            for (row = 0; row < 4; row++) {
+                dt_display_utf8(owner.path, line, 71, horizontal + row * 70);
+                text(4, 7 + row, CYAN, line);
+            }
+            sprintf(line,
+                    "%s  |  First cluster %lu  |  %lu bytes",
+                    owner.file.directory == 2 ? "FAT32 root directory"
+                    : owner.file.directory    ? "Directory"
+                                              : "Regular file",
+                    (unsigned long)owner.file.start,
+                    (unsigned long)owner.file.size);
+            text(4, 12, WORK, line);
+            if (owner.file.directory != 2) {
+                sprintf(line,
+                        "Directory entry: disk LBA %lu byte %u",
+                        (unsigned long)(ui.volume.start + owner.file.sector),
+                        owner.file.offset);
+                text(4, 14, WORK, line);
+            }
+            text(4,
+                 16,
+                 MUTED,
+                 "First owner in the scanned allocation prefixes; no sectors written.");
+        } else {
+            text(4, 8, AMBER, "No owner found in the scanned allocated prefixes.");
+        }
+        text(4,
+             18,
+             complete && !result.errors ? GREEN : AMBER,
+             !complete       ? "Lookup INCOMPLETE; additional references may be unknown."
+             : result.errors ? "Scan findings may affect ownership. Use F3, then F6 to review."
+                             : "Catalog complete; no filesystem issues reported.");
+        text(4,
+             21,
+             CYAN,
+             owner.path && !owner.file.directory
+                 ? "R: export file   Left/Right: scroll path   Home: start   Esc: return"
+                 : "Left/Right: scroll path   Home: path start   Esc: return");
+        flush();
+        k = key();
+        if (k == 27 || k == 13)
+            break;
+        if ((k == 'r' || k == 'R') && owner.path && !owner.file.directory) {
+            free(owner.path);
+            recover_files(1, owner.target);
+            return;
+        }
+        if (k == NAV_LEFT)
+            horizontal = horizontal >= 35 ? horizontal - 35 : 0;
+        if (k == NAV_RIGHT && owner.path && horizontal < strlen(owner.path))
+            horizontal += 35;
+        if (k == NAV_HOME)
+            horizontal = 0;
+    }
+    free(owner.path);
 }
 
 static void sector_viewer(dt_u32 sector)
@@ -981,7 +1240,7 @@ static void sector_viewer(dt_u32 sector)
              21,
              *notice ? AMBER : CYAN,
              *notice ? notice : "Left/Right: byte page  PgUp/PgDn: sector  Home/End: disk bounds");
-        text(3, 22, CYAN, "G: go to disk LBA (decimal or 0x hex)  R: reread  Esc: return");
+        text(3, 22, CYAN, "G: go to disk LBA  R: reread  O: cluster owner  Esc: return");
         fill(0, 24, 80, ' ', TITLE);
         text(1, 24, TITLE, "Read-only inspection. No editing or disk writes.");
         flush();
@@ -1003,17 +1262,17 @@ static void sector_viewer(dt_u32 sector)
             reload = 1;
         } else if (k == 'r' || k == 'R') {
             reload = 1;
+        } else if (k == 'o' || k == 'O') {
+            owner_view(sector);
         } else if (k == 'g' || k == 'G') {
-            char input[32], *end;
-            unsigned long value;
+            char input[32];
+            dt_u32 value;
             int base;
 
             if (!prompt(" GO TO ABSOLUTE DISK LBA ", input, sizeof(input)))
                 continue;
             base = !strncmp(input, "0x", 2) || !strncmp(input, "0X", 2) ? 16 : 10;
-            errno = 0;
-            value = strtoul(input, &end, base);
-            if (errno || *end || input[0] == '-' || value >= ui.disk.sectors) {
+            if (!dt_parse_u32(input, (unsigned)base, &value) || value >= ui.disk.sectors) {
                 strcpy(notice,
                        "Invalid disk LBA; enter a sector within the displayed disk bounds.");
                 continue;
@@ -1059,11 +1318,26 @@ static void details(void)
         sector_viewer(selected_sector());
 }
 
+static int confirm_bios_write(void)
+{
+    const char *lines[] = {"Use a clean DOS boot without disk caches or disk TSRs.",
+                           "The source disk must have no mounted DOS partitions.",
+                           "Keep the journal on a different local IDE disk.",
+                           "Both disks must support ATA flush on a legacy IDE controller.",
+                           "Enter runs the checks. Esc cancels without writing."};
+
+    return ui.bios != 1 || modal(" BIOS REPAIR REQUIREMENTS ", lines, 5);
+}
+
 static void apply_reviewed_plan(DtPlan *plan, const char *journal)
 {
     char err[160], reopen_err[160];
     int ok;
 
+    if (!confirm_bios_write()) {
+        strcpy(ui.status, "Repair cancelled; no writes made.");
+        return;
+    }
     release_disk_handle();
     ui.opened = reopen_target(journal, err);
     if (ui.opened) {
@@ -1094,33 +1368,33 @@ static void apply_reviewed_plan(DtPlan *plan, const char *journal)
         strcpy(ui.status, ok ? "Repair verified. Keep the journal for recovery." : err);
 }
 
-/* BIOS-only targets remain read-only; mounted DOS volumes use DOS locks. */
-static void change_bad_marker(int mark_bad)
+/* All repairs share the reviewed plan and backend write preflight. */
+static void change_bad_marker(int mark_bad, dt_u32 selected)
 {
-    char input[128], journal[128], err[160], *end;
-    char first_line[80], second_line[80], third_line[80];
+    char input[128], journal[128], err[160];
+    char first_line[80], second_line[80], third_line[80], owner_line[80];
     const char *lines[8];
     const char *confirm = mark_bad ? "MARK" : "UNMARK";
     DtPlan *plan;
-    unsigned long cluster, disk_sector;
+    dt_u32 cluster, disk_sector;
     int ok, relocate = 0;
     dt_u32 allocation_value;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Retest is available here; open Disk > DOS volume to apply repairs.");
-        return;
+    disk_sector = selected;
+    if (selected == 0xffffffffUL) {
+        if (!prompt(ui.bios == 2 ? (mark_bad ? " MARK BAD: VOLUME SECTOR (LBA) "
+                                             : " UNMARK BAD: VOLUME SECTOR (LBA) ")
+                                 : (mark_bad ? " MARK BAD: ABSOLUTE DISK SECTOR (LBA) "
+                                             : " UNMARK BAD: ABSOLUTE DISK SECTOR (LBA) "),
+                    input,
+                    sizeof(input)))
+            return;
+        if (!dt_parse_u32(input, 10, &disk_sector)) {
+            strcpy(ui.status, "Enter a valid sector number inside this volume's data area.");
+            return;
+        }
     }
-    if (!prompt(ui.bios == 2 ? (mark_bad ? " MARK BAD: VOLUME SECTOR (LBA) "
-                                         : " UNMARK BAD: VOLUME SECTOR (LBA) ")
-                             : (mark_bad ? " MARK BAD: ABSOLUTE DISK SECTOR (LBA) "
-                                         : " UNMARK BAD: ABSOLUTE DISK SECTOR (LBA) "),
-                input,
-                sizeof(input)))
-        return;
-    errno = 0;
-    disk_sector = strtoul(input, &end, 10);
-    if (*end || errno || disk_sector > 0xfffffffeUL ||
-        disk_sector < ui.volume.start + ui.volume.data ||
+    if (disk_sector > 0xfffffffeUL || disk_sector < ui.volume.start + ui.volume.data ||
         disk_sector - ui.volume.start - ui.volume.data >= ui.volume.clusters * ui.volume.spc) {
         strcpy(
             ui.status,
@@ -1142,13 +1416,35 @@ static void change_bad_marker(int mark_bad)
     ok = relocate ? dt_relocate_plan(&ui.volume, (dt_u32)cluster, plan, progress, NULL, err)
                   : dt_bad_plan(&ui.volume, (dt_u32)cluster, mark_bad, plan, progress, NULL, err);
     ui.busy = 0;
+    if (!ok && relocate &&
+        !strcmp(err, "Source cluster is unreadable; export recoverable file data first")) {
+        const char *warning[] = {
+            "Some source sectors remained unreadable after three attempts.",
+            "Salvage can copy readable bytes and replace missing sectors with ZERO.",
+            "This loses the missing bytes in the active file. Export needed data first.",
+            "Directories cannot be salvaged this way. The original cluster is not written.",
+            "Enter previews salvage; Esc leaves the volume unchanged."};
+
+        if (modal(" UNREADABLE FILE DATA ", warning, 5)) {
+            clear_findings();
+            ui.busy = 1;
+            ok = dt_salvage_plan(&ui.volume, cluster, plan, finding, NULL, progress, NULL, err);
+            ui.busy = 0;
+            ui.preview = ok ? 6 : 0;
+            ui.scanned = ui.retested = 0;
+            confirm = "SALVAGE";
+        }
+    }
     if (!ok) {
         strcpy(ui.status, err);
         dt_plan_free(plan);
         return;
     }
-    sprintf(
-        first_line, "%s cluster %lu: %u sectors will be journaled.", confirm, cluster, plan->count);
+    sprintf(first_line,
+            "%s cluster %lu: %u sectors will be journaled.",
+            confirm,
+            (unsigned long)cluster,
+            plan->count);
     sprintf(second_line,
             "Disk sectors %lu through %lu (%u sectors per cluster).",
             (unsigned long)(ui.volume.start + ui.volume.data + (cluster - 2) * ui.volume.spc),
@@ -1163,6 +1459,45 @@ static void change_bad_marker(int mark_bad)
                           : "Every sector in the cluster passed the read retest.";
     lines[4] = relocate ? "File contents, name and size are preserved. Source data is not written."
                         : "Readability now does not guarantee long-term media health.";
+    if (plan->kind == DT_REPAIR_RELOCATE_DIR) {
+        lines[3] = "Directory data moves to a free cluster; the source is marked bad.";
+        lines[4] = "Directory links and child parent pointers are updated together.";
+    }
+    if (plan->kind == DT_REPAIR_RELOCATE_ROOT) {
+        lines[3] = "Root directory data moves; the source cluster is marked bad.";
+        lines[4] = "Moving the root head updates primary and backup boot pointers.";
+    }
+    if (plan->kind == DT_REPAIR_SALVAGE) {
+        unsigned sector, gaps = 0, index;
+
+        strcpy(owner_line, "File identity unavailable; cancel and export before repair.");
+        for (index = 0; index < ui.log_count; index++) {
+            if (!strcmp(ui.log[index].code, "SALVAGE_FILE")) {
+                const char *name = strrchr(ui.log[index].message, '/');
+
+                strcpy(owner_line, "File: ");
+                dt_display_utf8(name ? name + 1 : ui.log[index].message, owner_line + 6, 65, 0);
+                break;
+            }
+        }
+        if (index == ui.log_count) {
+            strcpy(ui.status, "Cannot retain the salvage file identity; no sectors changed.");
+            dt_plan_free(plan);
+            return;
+        }
+        lines[2] = owner_line;
+
+        for (sector = 0; sector < ui.volume.spc; sector++) {
+            if (plan->gaps[sector / 8] & (1u << (sector % 8)))
+                gaps++;
+        }
+        sprintf(second_line,
+                "%u unreadable sectors (%lu bytes) will become ZERO in the file.",
+                gaps,
+                (unsigned long)gaps * 512);
+        lines[3] = "Readable data moves; missing bytes are NOT recovered. Source marked bad.";
+        lines[4] = "File name and size stay the same. Original source sectors are not written.";
+    }
     lines[5] = "A new journal will preserve all overwritten sectors.";
     lines[6] = "";
     lines[7] = third_line;
@@ -1185,19 +1520,14 @@ static void recover_primary_boot(void)
 {
     DtVolume candidate;
     DtPlan *plan;
-    char input[32], journal[128], err[160], source_line[80], target_line[80], *end;
+    char input[32], journal[128], err[160], source_line[80], target_line[80];
     const char *lines[6];
-    unsigned long source;
+    dt_u32 source;
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Primary recovery writes require an image or mounted DOS volume.");
-        return;
-    }
     if (!prompt(" BACKUP BOOT SECTOR (USUALLY 6) ", input, sizeof(input)))
         return;
-    source = strtoul(input, &end, 10);
-    if (!*input || *end || source < 1 || source > 65534) {
+    if (!dt_parse_u32(input, 10, &source) || source < 1 || source > 65534) {
         strcpy(ui.status, "Backup sector must be numbered from 1 through 65534.");
         return;
     }
@@ -1255,10 +1585,6 @@ static void repair_metadata(int backup_boot)
     const char *lines[7];
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume to apply repairs to mounted media.");
-        return;
-    }
     plan = dt_plan_create();
     if (!plan) {
         strcpy(ui.status, "Insufficient memory for repair plan.");
@@ -1322,21 +1648,15 @@ static void repair_metadata(int backup_boot)
 static void repair_fat_copies(void)
 {
     DtPlan *plan;
-    char input[32], journal[128], err[160], *end;
+    char input[32], journal[128], err[160];
     char summary[80], source_line[80];
     const char *lines[7];
-    unsigned long source;
+    dt_u32 source;
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume to repair FAT copies on mounted media.");
-        return;
-    }
     if (!prompt(" SOURCE FAT NUMBER TO KEEP (1, 2, ...) ", input, sizeof(input)))
         return;
-    errno = 0;
-    source = strtoul(input, &end, 10);
-    if (errno || !*input || *end || source < 1 || source > ui.volume.copies) {
+    if (!dt_parse_u32(input, 10, &source) || source < 1 || source > ui.volume.copies) {
         strcpy(ui.status, "Choose an existing FAT copy, numbered from 1.");
         return;
     }
@@ -1357,7 +1677,7 @@ static void repair_fat_copies(void)
     sprintf(summary, "Rebuild FAT copies: %u metadata sectors will change.", plan->count);
     sprintf(source_line,
             "Keep source FAT %lu of %u. Its file and directory scan completed.",
-            source,
+            (unsigned long)source,
             ui.volume.copies);
     lines[0] = summary;
     lines[1] = source_line;
@@ -1389,21 +1709,16 @@ enum {
 static void repair_chains(int mode)
 {
     DtPlan *plan;
-    char input[32], journal[128], err[160], summary[80], authority[80], *end;
-    unsigned long source = 0;
+    char input[32], journal[128], err[160], summary[80], authority[80];
+    dt_u32 source = 0;
     int tree = mode == CHAIN_TREE || mode == CHAIN_SOURCE;
     const char *lines[9];
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume to repair chains on mounted media.");
-        return;
-    }
     if (mode == CHAIN_SOURCE) {
         if (!prompt(" SOURCE FAT NUMBER TO REPAIR AND KEEP ", input, sizeof(input)))
             return;
-        source = strtoul(input, &end, 10);
-        if (!*input || *end || source < 1 || source > ui.volume.copies) {
+        if (!dt_parse_u32(input, 10, &source) || source < 1 || source > ui.volume.copies) {
             strcpy(ui.status, "Choose an existing FAT copy number starting at 1.");
             return;
         }
@@ -1464,7 +1779,9 @@ static void repair_chains(int mode)
     }
     lines[5] = "Names stay intact. Back up needed data before applying.";
     if (source) {
-        sprintf(authority, "FAT %lu is authority; its repaired copy replaces every FAT.", source);
+        sprintf(authority,
+                "FAT %lu is authority; its repaired copy replaces every FAT.",
+                (unsigned long)source);
         lines[5] = authority;
     }
     lines[6] = "Esc cancels; F6 lists proposed changes and F7 exports them.";
@@ -1505,6 +1822,179 @@ static void repair_chains(int mode)
     dt_plan_free(plan);
 }
 
+static void rebuild_fat_headers(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[5];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for header repair.");
+        return;
+    }
+    ui.busy = 1;
+    ok = dt_fat_header_plan(&ui.volume, plan, progress, NULL, err);
+    ui.busy = 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "FAT headers are valid; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary, "Rebuild reserved FAT entries in %u metadata sectors.", plan->count);
+    lines[0] = summary;
+    lines[1] = "The boot sector supplies the media descriptor.";
+    lines[2] = "Clean-shutdown and I/O-error flags stay intact.";
+    lines[3] = "Allocation and directory ownership have been checked.";
+    lines[4] = "Type REBUILD to approve; the journal saves original bytes.";
+    if (!modal(" REVIEW FAT HEADERS ", lines, 5) ||
+        !prompt(" TYPE REBUILD TO REPAIR FAT HEADERS ", input, sizeof(input)) ||
+        strcmp(input, "REBUILD") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "FAT header repair cancelled; no writes made.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void clear_timestamps(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for timestamp repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_timestamp_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 5 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No invalid timestamps; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Clear %lu invalid timestamp fields in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Invalid fields become zero; the original date/time is unknown.";
+    lines[2] = "Zero time displays as midnight. Valid fields stay intact.";
+    lines[3] = "Names, file contents and allocation stay intact.";
+    lines[4] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[5] = "Type CLEAR to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW INVALID TIMESTAMPS ", lines, 6) ||
+        !prompt(" TYPE CLEAR TO RESET INVALID FIELDS ", input, sizeof(input)) ||
+        strcmp(input, "CLEAR") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Timestamp repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void clear_invalid_lfn(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for long-name cleanup.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_lfn_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 7 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No invalid long names; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Delete %lu invalid LFN records in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Invalid long names are lost; their DOS aliases stay intact.";
+    lines[2] = "Valid long names, file contents and allocation stay intact.";
+    lines[3] = "Only invalid LFN slots are deleted; no names are guessed.";
+    lines[4] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[5] = "Type CLEAR to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW INVALID LONG NAMES ", lines, 6) ||
+        !prompt(" TYPE CLEAR TO DELETE INVALID LFN ", input, sizeof(input)) ||
+        strcmp(input, "CLEAR") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Long-name cleanup cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void repair_short_names(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for alias repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_alias_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 8 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No invalid DOS aliases; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Replace %lu invalid DOS aliases in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Invalid DOS aliases become unique R0000001.CHK-style names.";
+    lines[2] = "Valid long names, file contents and allocation stay intact.";
+    lines[3] = "Valid LFN checksums follow the new aliases; no text is guessed.";
+    lines[4] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[5] = "Type RENAME to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW INVALID DOS ALIASES ", lines, 6) ||
+        !prompt(" TYPE RENAME TO REPLACE INVALID ALIASES ", input, sizeof(input)) ||
+        strcmp(input, "RENAME") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Alias repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
 static void reclaim_lost(void)
 {
     DtPlan *plan;
@@ -1512,10 +2002,6 @@ static void reclaim_lost(void)
     const char *lines[7];
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume to reclaim lost allocation on mounted media.");
-        return;
-    }
     plan = dt_plan_create();
     if (!plan) {
         strcpy(ui.status, "Insufficient memory for repair plan.");
@@ -1553,7 +2039,7 @@ static void reclaim_lost(void)
     dt_plan_free(plan);
 }
 
-static void recover_files(int live)
+static void recover_files(int live, dt_u32 cluster)
 {
     char destination[128], err[160];
     DtRecovery recovered;
@@ -1569,16 +2055,35 @@ static void recover_files(int live)
                                 "RECOVERY.TXT maps files to their original UTF-8 paths.",
                                 "Damaged files retain their known allocated prefixes.",
                                 "Unreadable sectors become documented zero-filled gaps."};
+    const char *deleted_lines[] = {"Export deleted-file candidates without changing the source.",
+                                   "Choose an existing directory on a separate volume.",
+                                   "All candidates are UNVERIFIED; old data may be overwritten.",
+                                   "Cleared FAT links require a CONTIGUOUS GUESS.",
+                                   "Live-owned clusters are excluded; missing data is reported.",
+                                   "Raw deleted names/LFN slots are kept in RECOVERY.TXT."};
     const char *result_lines[5];
     char summary[100], gaps[100], location[63];
     int ok;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume so recovery can verify a separate destination.");
-        return;
+    if (live == 3) {
+        deleted_lines[0] = "Find unowned directories with intact dot entries.";
+        deleted_lines[3] = "Export surviving contents; directories are not reattached.";
+        deleted_lines[5] = "Directory evidence and file names are kept in RECOVERY.TXT.";
     }
-    if (!modal(live ? " EXPORT LIVE FILES " : " RECOVER LOST CHAINS ",
-               live ? live_lines : lines,
+    if (cluster)
+        live_lines[0] = "Export the regular file owning the selected cluster.";
+    if (ui.bios == 1) {
+        lines[1] = "Choose an existing directory on a different physical disk.";
+        live_lines[1] = lines[1];
+        deleted_lines[1] = lines[1];
+    }
+    if (!modal(live == 3   ? " FIND ORPHAN DIRECTORIES "
+               : live >= 2 ? " RECOVER DELETED CANDIDATES "
+               : live      ? " EXPORT LIVE FILES "
+                           : " RECOVER LOST CHAINS ",
+               live >= 2 ? deleted_lines
+               : live    ? live_lines
+                         : lines,
                sizeof(lines) / sizeof(lines[0])) ||
         !prompt(" RECOVERY DESTINATION DIRECTORY ", destination, sizeof(destination)))
         return;
@@ -1586,30 +2091,56 @@ static void recover_files(int live)
     strcpy(ui.status,
            live ? "Checking allocation before exporting files."
                 : "Checking ownership before exporting lost chains.");
-    ok = live ? dt_export_files(&ui.volume, destination, &recovered, progress, NULL, err)
-              : dt_recover_lost(&ui.volume, destination, &recovered, progress, NULL, err);
+    ok = live == 3
+             ? dt_recover_directories(&ui.volume, destination, &recovered, progress, NULL, err)
+         : live >= 2 ? dt_recover_deleted(&ui.volume, destination, &recovered, progress, NULL, err)
+         : live
+             ? (cluster ? dt_export_cluster_file(
+                              &ui.volume, cluster, destination, &recovered, progress, NULL, err)
+                        : dt_export_files(&ui.volume, destination, &recovered, progress, NULL, err))
+             : dt_recover_lost(&ui.volume, destination, &recovered, progress, NULL, err);
     ui.busy = 0;
     sprintf(summary,
             "%lu files; %lu/%lu clusters.",
             (unsigned long)recovered.files,
             (unsigned long)recovered.clusters,
             (unsigned long)recovered.lost);
+    if (live >= 2)
+        sprintf(summary,
+                "%lu unverified candidates; %lu files; %lu clusters.",
+                (unsigned long)recovered.candidates,
+                (unsigned long)recovered.files,
+                (unsigned long)recovered.clusters);
     sprintf(gaps,
             "%lu unreadable; %lu damaged; %lu scan findings.",
             (unsigned long)recovered.unreadable,
             (unsigned long)recovered.damaged,
             (unsigned long)recovered.issues);
     dt_display_utf8(recovered.directory, location, sizeof(location), 0);
-    result_lines[0] = ok ? "Export finished. Source allocation is unchanged."
-                         : "Recovery is incomplete; retained files may be partial.";
+    result_lines[0] = recovered.catalog_incomplete
+                          ? "Directory catalog INCOMPLETE: files or owners may be missing."
+                      : ok ? "Export finished. Source allocation is unchanged."
+                           : "Recovery is incomplete; retained files may be partial.";
+    if (recovered.catalog_incomplete)
+        sprintf(gaps,
+                "%lu unreadable payload sectors; %lu scan findings. See directory gaps.",
+                (unsigned long)recovered.unreadable,
+                (unsigned long)recovered.issues);
     result_lines[1] = summary;
     result_lines[2] = gaps;
     result_lines[3] = *recovered.directory ? location : "No recovery directory created.";
     result_lines[4] =
         *recovered.directory ? "See RECOVERY.TXT for cluster provenance and gaps." : "";
-    modal(live ? " LIVE-FILE EXPORT RESULTS " : " LOST-CHAIN RECOVERY RESULTS ", result_lines, 5);
+    modal(live == 3   ? " ORPHAN-DIRECTORY RESULTS "
+          : live >= 2 ? " DELETED-CANDIDATE RESULTS "
+          : live      ? " LIVE-FILE EXPORT RESULTS "
+                      : " LOST-CHAIN RECOVERY RESULTS ",
+          result_lines,
+          5);
     strcpy(ui.status,
-           ok ? (recovered.unreadable || recovered.damaged
+           ok ? (live == 3   ? "Unverified candidates exported; verify contents using the manifest."
+                 : live == 2 ? "Deleted candidates exported; verify contents using the manifest."
+                 : recovered.unreadable || recovered.damaged
                      ? "Recovery finished with recorded gaps or damage."
                  : recovered.issues ? "Recovery finished with recorded scan findings."
                                     : "Recovery finished; source allocation unchanged.")
@@ -1621,10 +2152,6 @@ static void restore_journal(int torn)
     char journal[128], confirm[32], err[160], reopen_err[160];
     int ok = 0;
 
-    if (ui.bios == 1) {
-        strcpy(ui.status, "Open Disk > DOS volume to restore mounted media.");
-        return;
-    }
     if (torn) {
         const char *lines[] = {"Restore original metadata after an interrupted write.",
                                "Every current byte must match a saved before or after byte.",
@@ -1639,6 +2166,10 @@ static void restore_journal(int torn)
         !prompt(" TYPE RESTORE TO RESTORE ORIGINAL METADATA ", confirm, sizeof(confirm)) ||
         strcmp(confirm, "RESTORE"))
         return;
+    if (!confirm_bios_write()) {
+        strcpy(ui.status, "Repair cancelled; no writes made.");
+        return;
+    }
     release_disk_handle();
     ui.opened = reopen_target(journal, err);
     if (ui.opened) {
@@ -1676,10 +2207,12 @@ enum {
     OPEN_IMAGE = 1,
     OPEN_BIOS,
     OPEN_DOS,
+    OEM_CODEPAGE,
     VOLUMES,
     QUIT,
     CHECK,
     SURFACE,
+    SURFACE_BLOCK,
     ALLOCATION,
     ZOOM_IN,
     ZOOM_OUT,
@@ -1695,6 +2228,8 @@ enum {
     REBUILD_FAT,
     RECOVER_LOST,
     EXPORT_FILES,
+    RECOVER_DELETED,
+    RECOVER_DIRECTORIES,
     RESTORE_TORN,
     RECLAIM_LOST,
     REPAIR_FILES,
@@ -1702,7 +2237,12 @@ enum {
     REPAIR_TREE,
     REPAIR_TREE_SOURCE,
     REPAIR_ENTRIES,
+    CLEAR_TIMESTAMPS,
+    CLEAR_LFN,
+    REPAIR_ALIASES,
+    REBUILD_FAT_HEADERS,
     SECTOR_VIEW,
+    OWNER_VIEW,
     HELP,
     ABOUT
 };
@@ -1717,6 +2257,7 @@ static const MenuItem disk_menu[] = {
     {"BIOS device...", OPEN_BIOS},
     {"DOS volume...", OPEN_DOS},
     {"Select volume...   F2", VOLUMES},
+    {"OEM code page...", OEM_CODEPAGE},
     {"Exit             Esc", QUIT},
     {NULL, 0},
 };
@@ -1735,9 +2276,13 @@ static const MenuItem diagnose_menu[] = {
     {"Repair file chains...", REPAIR_FILES},
     {"Reclaim lost allocation...", RECLAIM_LOST},
     {"Recover lost chains...", RECOVER_LOST},
+    {"Rebuild FAT headers...", REBUILD_FAT_HEADERS},
     {"Rebuild FAT copies...", REBUILD_FAT},
     {"Rebuild backup boot...", REBUILD_BOOT_BACKUP},
     {"Rebuild FAT32 FSInfo...", REBUILD_FSINFO},
+    {"Repair invalid DOS names...", REPAIR_ALIASES},
+    {"Clear invalid long names...", CLEAR_LFN},
+    {"Clear invalid timestamps...", CLEAR_TIMESTAMPS},
     {NULL, 0},
 };
 static const MenuItem view_menu[] = {
@@ -1746,12 +2291,16 @@ static const MenuItem view_menu[] = {
     {"Whole volume       -", ZOOM_OUT},
     {"Findings          F6", FINDINGS},
     {"Sector viewer...  F8", SECTOR_VIEW},
+    {"Retest map block   T", SURFACE_BLOCK},
+    {"Cluster owner...   O", OWNER_VIEW},
     {NULL, 0},
 };
 static const MenuItem report_menu[] = {
     {"Save report...    F7", SAVE_REPORT},
     {"Export live files...", EXPORT_FILES},
     {"Recover interrupted write...", RESTORE_TORN},
+    {"Recover deleted files...", RECOVER_DELETED},
+    {"Find orphan directories...", RECOVER_DIRECTORIES},
     {NULL, 0},
 };
 static const MenuItem help_menu[] = {
@@ -1761,9 +2310,14 @@ static const MenuItem help_menu[] = {
 };
 static const MenuItem *menus[] = {disk_menu, diagnose_menu, view_menu, report_menu, help_menu};
 static const int menu_x[] = {1, 9, 21, 29, 40};
+static const char *menu_labels[] = {"Disk", "Diagnose", "View", "Reports", "Help"};
 
 static int enabled(int action)
 {
+    if (action == SURFACE_BLOCK)
+        return ui.mounted && ui.map.cells;
+    if (action == OWNER_VIEW)
+        return ui.mounted;
     if (action == SECTOR_VIEW)
         return ui.opened && ui.disk.sectors;
     if (action == RECOVER_PRIMARY_BOOT)
@@ -1772,13 +2326,16 @@ static int enabled(int action)
         (action == MARK_BAD || action == UNMARK_BAD || action == REBUILD_FSINFO ||
          action == REBUILD_BOOT_BACKUP || action == REBUILD_FAT || action == RECLAIM_LOST ||
          action == REPAIR_FILES || action == REPAIR_DIRECTORIES || action == REPAIR_TREE ||
-         action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES))
+         action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS ||
+         action == CLEAR_LFN || action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
         return 0;
     if (action == VOLUMES)
         return ui.opened && ui.count;
-    if (action == RESTORE_TORN || action == EXPORT_FILES || action == RECOVER_LOST ||
-        action == RECLAIM_LOST || action == REPAIR_FILES || action == REPAIR_DIRECTORIES ||
-        action == REPAIR_TREE || action == REPAIR_ENTRIES)
+    if (action == RECOVER_DIRECTORIES || action == RESTORE_TORN || action == RECOVER_DELETED ||
+        action == EXPORT_FILES || action == RECOVER_LOST || action == RECLAIM_LOST ||
+        action == REPAIR_FILES || action == REPAIR_DIRECTORIES || action == REPAIR_TREE ||
+        action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS || action == CLEAR_LFN ||
+        action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS)
         return ui.mounted;
     if (action == REBUILD_FAT || action == REPAIR_TREE_SOURCE)
         return ui.mounted && ui.volume.mirrored && ui.volume.copies > 1;
@@ -1791,31 +2348,59 @@ static int enabled(int action)
 
 static int menu(void)
 {
-    unsigned tab = 0, selected = 0, i, count;
+    unsigned tab = 0, selected = 0, top = 0, i, count, visible;
     for (;;) {
-        int k, x = menu_x[tab];
+        int k, x = menu_x[tab], width = 26;
         const MenuItem *items = menus[tab];
-        for (count = 0; items[count].label; count++)
-            ;
-        draw();
-        box(x, 2, 26, (int)count + 2, NULL);
-        for (i = 0; i < count; i++) {
-            unsigned attr = !enabled(items[i].action) ? MUTED : (i == selected ? FOCUS : WORK);
-            fill(x + 1, 3 + i, 24, ' ', attr);
-            text(x + 2, 3 + i, attr, items[i].label);
+        for (count = 0; items[count].label; count++) {
+            int needed = (int)strlen(items[count].label) + 4;
+
+            if (needed > width)
+                width = needed;
         }
+        if (x + width > 79)
+            x = 79 - width;
+        visible = count < 19 ? count : 19;
+        if (selected < top)
+            top = selected;
+        if (selected >= top + visible)
+            top = selected - visible + 1;
+        draw_workspace();
+        fill(menu_x[tab], 1, (int)strlen(menu_labels[tab]) + 2, ' ', FOCUS);
+        text(menu_x[tab] + 1, 1, FOCUS, menu_labels[tab]);
+        box(x, 2, width, (int)visible + 2, NULL);
+        for (i = 0; i < visible; i++) {
+            unsigned item = top + i;
+            unsigned attr =
+                !enabled(items[item].action) ? MUTED : (item == selected ? FOCUS : WORK);
+
+            fill(x + 1, 3 + i, width - 2, ' ', attr);
+            text(x + 2, 3 + i, attr, items[item].label);
+        }
+        if (top)
+            cell(x + width - 3, 2, '^', BRIGHT);
+        if (top + visible < count)
+            cell(x + width - 3, (int)visible + 3, 'v', BRIGHT);
         flush();
         k = key();
         if (k == 27 || k == KEY_F10)
             return 0;
         if (k == NAV_LEFT || k == NAV_RIGHT) {
             tab = (tab + (k == NAV_RIGHT ? 1 : 4)) % 5;
-            selected = 0;
+            selected = top = 0;
         }
         if (k == NAV_UP)
             selected = (selected + count - 1) % count;
         if (k == NAV_DOWN)
             selected = (selected + 1) % count;
+        if (k == NAV_PGUP)
+            selected = selected >= visible ? selected - visible : 0;
+        if (k == NAV_PGDN)
+            selected = selected + visible < count ? selected + visible : count - 1;
+        if (k == NAV_HOME)
+            selected = 0;
+        if (k == NAV_END)
+            selected = count - 1;
         if (k == 13 && enabled(items[selected].action))
             return items[selected].action;
     }
@@ -1832,12 +2417,12 @@ static int action(int command)
                                   "",
                                   "Built with Open Watcom and the DOS/32A extender.",
                                   "Journaled repairs, file recovery and surface diagnostics."};
-    static const char *help[] = {"Use F10, then arrows and Enter to navigate the menus.",
+    static const char *help[] = {"F10 opens menus. Arrows, Home/End and Enter navigate.",
                                  "",
                                  "F2 Volumes  F3 Filesystem check  F4 Surface read",
                                  "F5 Allocation map  F6 Findings  F7 Save report  F8 Bytes",
                                  "",
-                                 "Map: arrows select; Enter details; + zoom; - reset.",
+                                 "Map: arrows select; Enter details; + zoom; - reset; T retest.",
                                  "Esc cancels an operation or closes a window.",
                                  "",
                                  "Allocation colors describe FAT entries, not file health.",
@@ -1851,6 +2436,23 @@ static int action(int command)
         return 1;
     }
     switch (command) {
+    case OEM_CODEPAGE:
+        sprintf(path, "%u", dt_oem_codepage());
+        if (prompt(" OEM CODE PAGE: 0 UNKNOWN, 437, 850, 852, 860, 866 ", path, sizeof(path))) {
+            if (!dt_parse_u32(path, 10, &first) ||
+                (first > 65535 || !dt_set_oem_codepage((unsigned)first))) {
+                strcpy(ui.status, "Use 0 (unknown), 437, 850, 852, 860 or 866.");
+            } else {
+                clear_findings();
+                ui.scanned = ui.retested = 0;
+                strcpy(ui.status,
+                       "OEM policy changed. F3 checks names using the selected code page.");
+            }
+        }
+        break;
+    case OWNER_VIEW:
+        owner_view(selected_sector());
+        break;
     case SECTOR_VIEW:
         sector_viewer(selected_sector());
         break;
@@ -1894,13 +2496,28 @@ static int action(int command)
                      "bill of health.");
         break;
     case SURFACE:
+    case SURFACE_BLOCK:
+        first = 0;
+        count = ui.volume.total;
+        if (command == SURFACE_BLOCK) {
+            dt_map_range(&ui.map, ui.cell, &first, &count);
+            if (!ui.map.surface) {
+                first = ui.volume.data + (first - 2) * ui.volume.spc;
+                count *= ui.volume.spc;
+            }
+        }
         clear_findings();
         ui.scanned = ui.retested = 0;
         ui.surface_tested = ui.surface_failed = 0;
         ui.busy = 1;
         ui.cell = 0;
-        strcpy(ui.status, "Reading every volume sector, including metadata. Esc cancels.");
-        ok = dt_surface_ex(&ui.volume, 0, ui.volume.total, &ui.map, progress, NULL, finding, NULL);
+        ui.surface_first = first;
+        ui.surface_count = count;
+        strcpy(ui.status,
+               command == SURFACE_BLOCK
+                   ? "Retesting the selected map block. Esc cancels."
+                   : "Reading every volume sector, including metadata. Esc cancels.");
+        ok = dt_surface_ex(&ui.volume, first, count, &ui.map, progress, NULL, finding, NULL);
         ui.surfaced = 1;
         ui.surface_complete = ok;
         for (first = 0; first < ui.map.cells; first++) {
@@ -1920,7 +2537,7 @@ static int action(int command)
         dt_map_range(&ui.map, ui.cell, &first, &count);
         if (ui.map.surface) {
             strcpy(ui.status,
-                   "Surface results cover the full volume. F5 switches to the zoomable "
+                   "F5 switches from surface results to the zoomable "
                    "allocation map.");
         } else if (count > 1) {
             allocation(first, count);
@@ -1942,16 +2559,16 @@ static int action(int command)
         dt_bad_retest(&ui.volume, &ui.retest, finding, NULL, progress, NULL);
         ui.busy = 0;
         ui.retested = 1;
-        if (!ui.retest.complete)
-            finding(NULL, "RETEST_INCOMPLETE", 0, "Retest cancelled or FAT could not be read");
         strcpy(ui.status,
-               "Bad markers retained. F6 shows cluster results; F7 saves the retest report.");
+               ui.retest.complete
+                   ? "Bad markers retained. F6 shows cluster results; F7 saves the retest report."
+                   : "Retest incomplete. Bad markers retained. F6 shows why; F7 saves results.");
         break;
     case MARK_BAD:
-        change_bad_marker(1);
+        change_bad_marker(1, 0xffffffffUL);
         break;
     case UNMARK_BAD:
-        change_bad_marker(0);
+        change_bad_marker(0, 0xffffffffUL);
         break;
     case REBUILD_FSINFO:
         repair_metadata(0);
@@ -1961,6 +2578,18 @@ static int action(int command)
         break;
     case REBUILD_BOOT_BACKUP:
         repair_metadata(1);
+        break;
+    case REBUILD_FAT_HEADERS:
+        rebuild_fat_headers();
+        break;
+    case REPAIR_ALIASES:
+        repair_short_names();
+        break;
+    case CLEAR_LFN:
+        clear_invalid_lfn();
+        break;
+    case CLEAR_TIMESTAMPS:
+        clear_timestamps();
         break;
     case REPAIR_ENTRIES:
         repair_chains(CHAIN_ENTRIES);
@@ -1980,11 +2609,17 @@ static int action(int command)
     case RECLAIM_LOST:
         reclaim_lost();
         break;
+    case RECOVER_DIRECTORIES:
+        recover_files(3, 0);
+        break;
+    case RECOVER_DELETED:
+        recover_files(2, 0);
+        break;
     case EXPORT_FILES:
-        recover_files(1);
+        recover_files(1, 0);
         break;
     case RECOVER_LOST:
-        recover_files(0);
+        recover_files(0, 0);
         break;
     case REBUILD_FAT:
         repair_fat_copies();
@@ -2003,6 +2638,53 @@ static int action(int command)
         break;
     }
     return 1;
+}
+
+/* Route diagnosis to existing reviewed, journaled workflows. A preview may
+   replace the findings array, so never retain its code pointer across action(). */
+static int finding_repair(const char *code, int run)
+{
+    static const struct {
+        const char *code;
+        int command;
+    } repairs[] = {
+        {"FILE_SIZE", REPAIR_FILES},
+        {"CHAIN_RANGE", REPAIR_TREE},
+        {"CHAIN_SHARED", REPAIR_TREE},
+        {"CHAIN_INVALID", REPAIR_TREE},
+        {"DIR_DOT_METADATA", REPAIR_ENTRIES},
+        {"DIR_DOT_MISSING", REPAIR_ENTRIES},
+        {"DIR_DOT_ORDER", REPAIR_ENTRIES},
+        {"DIR_SIZE", REPAIR_ENTRIES},
+        {"DIR_TIMESTAMP", CLEAR_TIMESTAMPS},
+        {"DIR_NAME", REPAIR_ALIASES},
+        {"LFN_ORDER", CLEAR_LFN},
+        {"LFN_ORPHAN", CLEAR_LFN},
+        {"LFN_METADATA", CLEAR_LFN},
+        {"LFN_CHECKSUM", CLEAR_LFN},
+        {"LFN_NAME", CLEAR_LFN},
+        {"FAT_HEADER", REBUILD_FAT_HEADERS},
+        {"FAT_MIRROR", REPAIR_TREE_SOURCE},
+        {"FSINFO_SIGNATURE", REBUILD_FSINFO},
+        {"FSINFO_FREE", REBUILD_FSINFO},
+        {"FSINFO_NEXT", REBUILD_FSINFO},
+        {"FSINFO_RESERVED", REBUILD_FSINFO},
+        {"BOOT_BACKUP", REBUILD_BOOT_BACKUP},
+        {"BOOT_PRIMARY", RECOVER_PRIMARY_BOOT},
+    };
+
+    unsigned i;
+
+    if (ui.preview)
+        return 0;
+    for (i = 0; i < sizeof(repairs) / sizeof(repairs[0]); i++) {
+        if (!strcmp(code, repairs[i].code) && enabled(repairs[i].command)) {
+            if (run)
+                action(repairs[i].command);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int dt_ui(const char *path)
@@ -2039,6 +2721,10 @@ int dt_ui(const char *path)
             command = SAVE_REPORT;
         else if (k == KEY_F1 + 7)
             command = SECTOR_VIEW;
+        else if (k == 't' || k == 'T')
+            command = SURFACE_BLOCK;
+        else if (k == 'o' || k == 'O')
+            command = OWNER_VIEW;
         else if (k == 27)
             command = QUIT;
         else if (k == '+' || k == '=')

@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #ifdef __WATCOMC__
 #include <io.h>
+#include <dos.h>
 #include <share.h>
 #include <i86.h>
 #else
@@ -30,28 +31,115 @@ static int fail(char *err, const char *s)
     return 0;
 }
 
+typedef struct {
+#ifdef __WATCOMC__
+    int handle, positioned;
+    dt_u32 position;
+#else
+    FILE *file;
+#endif
+    dt_u32 sectors;
+} Image;
+
+#ifdef __WATCOMC__
+/* DOS reports unsigned DX:AX independently of the signed C long convention.
+   The offset is the register representation of a bounded signed displacement. */
+static int image_dos_seek(int handle, unsigned origin, dt_u32 offset, dt_u32 *position)
+{
+    union REGS r;
+
+    memset(&r, 0, sizeof(r));
+    r.w.ax = (unsigned short)(0x4200 | origin);
+    r.w.bx = (unsigned short)handle;
+    r.w.cx = (unsigned short)(offset >> 16);
+    r.w.dx = (unsigned short)offset;
+    int386(0x21, &r, &r);
+    if (r.x.cflag)
+        return 0;
+    *position = ((dt_u32)r.w.dx << 16) | r.w.ax;
+    return 1;
+}
+
+static int image_position(Image *image, dt_u32 sector)
+{
+    dt_u32 offset, first, position, distance;
+
+    if (sector >= image->sectors || (dt_u64)sector * 512 > 0xffffffffUL)
+        return 0;
+    offset = sector * 512;
+    if (image->positioned) {
+        if (offset == image->position)
+            return 1;
+        distance = offset > image->position ? offset - image->position : image->position - offset;
+        if (distance <= 0x7fffffffUL) {
+            if (offset < image->position)
+                distance = 0UL - distance;
+            image->positioned = 0;
+            if (!image_dos_seek(image->handle, 1, distance, &position) || position != offset)
+                return 0;
+            image->position = position;
+            image->positioned = 1;
+            return 1;
+        }
+    }
+    image->positioned = 0;
+    first = offset > 0x7fffffffUL ? 0x7fffffffUL : offset;
+    if (!image_dos_seek(image->handle, 0, first, &position) || position != first)
+        return 0;
+    if (offset != first &&
+        (!image_dos_seek(image->handle, 1, offset - first, &position) || position != offset))
+        return 0;
+    image->position = position;
+    image->positioned = 1;
+    return 1;
+}
+#else
+static int image_position(Image *image, dt_u32 sector)
+{
+    return sector < image->sectors && !fseeko(image->file, (off_t)sector * 512, SEEK_SET);
+}
+#endif
+
 static int image_read(void *ctx, dt_u32 sector, unsigned char *buf)
 {
+    Image *image = (Image *)ctx;
 #ifdef __WATCOMC__
-    if ((dt_u64)sector * 512 > LONG_MAX || fseek((FILE *)ctx, (long)sector * 512, SEEK_SET))
-        return 0;
-#else
-    if (fseeko((FILE *)ctx, (off_t)sector * 512, SEEK_SET))
-        return 0;
+    unsigned count;
 #endif
-    return fread(buf, 1, 512, (FILE *)ctx) == 512;
+
+    if (!image_position(image, sector))
+        return 0;
+#ifdef __WATCOMC__
+    if (_dos_read(image->handle, buf, 512, &count) || count != 512) {
+        image->positioned = 0;
+        return 0;
+    }
+    image->position += 512;
+    return 1;
+#else
+    return fread(buf, 1, 512, image->file) == 512;
+#endif
 }
 
 static int image_write(void *ctx, dt_u32 sector, const unsigned char *buf)
 {
+    Image *image = (Image *)ctx;
 #ifdef __WATCOMC__
-    if ((dt_u64)sector * 512 > LONG_MAX || fseek((FILE *)ctx, (long)sector * 512, SEEK_SET))
-        return 0;
-#else
-    if (fseeko((FILE *)ctx, (off_t)sector * 512, SEEK_SET))
-        return 0;
+    unsigned count;
 #endif
-    return fwrite(buf, 1, 512, (FILE *)ctx) == 512;
+
+    if (!image_position(image, sector))
+        return 0;
+#ifdef __WATCOMC__
+    if (_dos_write(image->handle, buf, 512, &count) || count != 512) {
+        image->positioned = 0;
+        return 0;
+    }
+    image->position += 512;
+    return 1;
+#else
+    return fwrite(buf, 1, 512, image->file) == 512;
+#endif
 }
 
 int dt_file_commit(FILE *file)
@@ -104,7 +192,17 @@ int dt_file_commit_directory(const char *path)
 
 static int image_sync(void *ctx)
 {
-    return dt_file_commit((FILE *)ctx);
+#ifdef __WATCOMC__
+    union REGS r;
+
+    memset(&r, 0, sizeof(r));
+    r.w.ax = 0x6800;
+    r.w.bx = (unsigned short)((Image *)ctx)->handle;
+    int386(0x21, &r, &r);
+    return !r.x.cflag;
+#else
+    return dt_file_commit(((Image *)ctx)->file);
+#endif
 }
 
 /* Exclusive creation prevents a journal path from truncating an existing image. */
@@ -125,26 +223,21 @@ FILE *dt_file_create(const char *path)
     return file;
 }
 
+#ifndef __WATCOMC__
 static FILE *image_writable(const char *path)
 {
     int fd;
     FILE *file;
     struct stat st;
-#ifndef __WATCOMC__
     struct flock lock;
-#endif
-#ifdef __WATCOMC__
-    fd = _sopen(path, O_RDWR | O_BINARY, SH_DENYRW);
-#else
+
     fd = open(path, O_RDWR);
-#endif
     if (fd < 0)
         return NULL;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
         close(fd);
         return NULL;
     }
-#ifndef __WATCOMC__
     memset(&lock, 0, sizeof(lock));
     lock.l_type = F_WRLCK;
     lock.l_whence = SEEK_SET;
@@ -152,43 +245,158 @@ static FILE *image_writable(const char *path)
         close(fd);
         return NULL;
     }
-#endif
     file = fdopen(fd, "r+b");
     if (!file)
         close(fd);
     return file;
 }
 
+#else
+/* Open existing files only. Extended-size mode is required by DOS 7 FAT32
+   even for opening a file whose length exceeds the signed 2-GiB boundary. */
+#pragma pack(push, 1)
+
+typedef struct {
+    dt_u32 edi, esi, ebp, reserved, ebx, edx, ecx, eax;
+    unsigned short flags, es, ds, fs, gs, ip, cs, sp, ss;
+} ImageRealRegs;
+
+#pragma pack(pop)
+
+static int image_dos_open(const char *path, int writable, char *err)
+{
+    union REGS r;
+    struct SREGS segments;
+    ImageRealRegs rm;
+    unsigned flags = 0x1000, selector, segment;
+    size_t length = strlen(path) + 1;
+    int handle = -1;
+
+    if (length > 260) {
+        fail(err, "Image path exceeds the DOS path buffer");
+        return -1;
+    }
+    memset(&r, 0, sizeof(r));
+    r.w.ax = 0x0100;
+    r.w.bx = (unsigned short)((length + 15) / 16);
+    int386(0x31, &r, &r);
+    if (r.x.cflag) {
+        fail(err, "Cannot allocate DOS image path buffer");
+        return -1;
+    }
+    segment = r.w.ax;
+    selector = r.w.dx;
+    _fmemcpy(MK_FP(selector, 0), path, length);
+    for (;;) {
+        memset(&rm, 0, sizeof(rm));
+        rm.eax = 0x6c00;
+        rm.ebx = flags | (writable ? 0x92 : 0xc0);
+        rm.edx = 1;
+        rm.ds = (unsigned short)segment;
+        memset(&r, 0, sizeof(r));
+        segread(&segments);
+        r.w.ax = 0x0300;
+        r.h.bl = 0x21;
+        r.x.edi = (unsigned long)&rm;
+        segments.es = segments.ds;
+        int386x(0x31, &r, &r, &segments);
+        if (r.x.cflag) {
+            fail(err, "Cannot invoke DOS image open");
+            break;
+        }
+        if (!(rm.flags & 1)) {
+            handle = (unsigned short)rm.eax;
+            break;
+        }
+        if (!flags || (rm.eax != 1 && rm.eax != 87)) {
+            sprintf(err, "Cannot open or lock image (DOS error %u)", (unsigned short)rm.eax);
+            break;
+        }
+        flags = 0;
+    }
+    memset(&r, 0, sizeof(r));
+    r.w.ax = 0x0101;
+    r.w.dx = (unsigned short)selector;
+    int386(0x31, &r, &r);
+    if (handle < 0)
+        return -1;
+    memset(&r, 0, sizeof(r));
+    r.w.ax = 0x4400;
+    r.w.bx = (unsigned short)handle;
+    int386(0x21, &r, &r);
+    if (r.x.cflag || (r.w.dx & 0x80)) {
+        fail(err, "Image handle is a device or cannot be identified");
+        _dos_close(handle);
+        return -1;
+    }
+    return handle;
+}
+#endif
+
 static int image_open(DtDisk *d, const char *path, int writable, char *err)
 {
-    FILE *f = writable ? image_writable(path) : fopen(path, "rb");
     dt_u64 size;
-    memset(d, 0, sizeof(*d));
-    if (!f)
-        return fail(err, "Cannot open or lock image");
-    setvbuf(f, NULL, _IONBF, 0);
+    Image *image;
 #ifdef __WATCOMC__
-    if (fseek(f, 0, SEEK_END) || ftell(f) < 0) {
-        fclose(f);
+    dt_u32 position;
+    int handle;
+#else
+    FILE *f;
+#endif
+
+    memset(d, 0, sizeof(*d));
+    image = (Image *)calloc(1, sizeof(*image));
+    if (!image)
+        return fail(err, "Insufficient memory for image handle");
+#ifdef __WATCOMC__
+    handle = image_dos_open(path, writable, err);
+    if (handle < 0) {
+        free(image);
+        return 0;
+    }
+    image->handle = handle;
+    if (!image_dos_seek(handle, 2, 0, &position)) {
+        _dos_close(handle);
+        free(image);
         return fail(err, "Cannot size image");
     }
-    size = (unsigned long)ftell(f);
+    size = position;
+    image->position = position;
+    image->positioned = 1;
 #else
+    f = writable ? image_writable(path) : fopen(path, "rb");
+    if (!f) {
+        free(image);
+        return fail(err, "Cannot open or lock image");
+    }
+    image->file = f;
+    setvbuf(f, NULL, _IONBF, 0);
     if (fseeko(f, 0, SEEK_END) || ftello(f) < 0) {
         fclose(f);
+        free(image);
         return fail(err, "Cannot size image");
     }
     size = (dt_u64)ftello(f);
 #endif
     if (!size || size % 512 || size / 512 > 0xffffffffUL) {
+#ifdef __WATCOMC__
+        _dos_close(handle);
+#else
         fclose(f);
+#endif
+        free(image);
+#ifdef __WATCOMC__
+        return fail(err, "DOS image size must be whole 512-byte sectors below 4 GiB");
+#else
         return fail(err, "Image size must be whole 512-byte sectors, at most 2 TiB");
+#endif
     }
-    d->ctx = f;
+    image->sectors = (dt_u32)(size / 512);
+    d->ctx = image;
     d->read = image_read;
     d->write = writable ? image_write : NULL;
     d->sync = writable ? image_sync : NULL;
-    d->sectors = (dt_u32)(size / 512);
+    d->sectors = image->sectors;
     return 1;
 }
 
@@ -204,8 +412,16 @@ int dt_image_open_write(DtDisk *d, const char *path, char *err)
 
 void dt_image_close(DtDisk *d)
 {
-    if (d->ctx)
-        fclose((FILE *)d->ctx);
+    if (d->ctx) {
+        Image *image = (Image *)d->ctx;
+
+#ifdef __WATCOMC__
+        _dos_close(image->handle);
+#else
+        fclose(image->file);
+#endif
+        free(image);
+    }
     memset(d, 0, sizeof(*d));
 }
 
