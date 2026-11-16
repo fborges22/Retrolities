@@ -4,7 +4,7 @@ OBJ := $(ROOT)/build/dos/obj/magicdisk
 WATCOM ?= /opt/watcom
 WCC := $(WATCOM)/binl64/wcc386
 WLINK := $(WATCOM)/binl64/wlink
-SOURCES := main.c disk.c partition.c mbrjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c ui.c
+SOURCES := main.c disk.c partition.c mbrjournal.c ebrjournal.c linkjournal.c containerjournal.c recordjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c ui.c
 OBJECTS := $(SOURCES:%.c=$(OBJ)/%.obj)
 .PHONY: dos host test test-dos
 dos: $(OUT)
@@ -18,7 +18,7 @@ $(OUT): $(OBJECTS) | $(dir $(OUT))
 host:
 	mkdir -p $(ROOT)/build/host
 	$(CC) -std=c99 -Wall -Wextra -Werror -g $(SOURCES) -o $(ROOT)/build/host/magicdisk
-test: host test-mbr
+test: host test-mbr test-ebr test-ebr-link test-container test-record
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/volume_search_probe.c disk.c -o $(ROOT)/build/host/volume-search-probe
 	python3 tests/test_volume_search.py $(ROOT)/build/host/volume-search-probe
 	python3 tests/test_volume_search_cli.py $(ROOT)/build/host/magicdisk
@@ -543,3 +543,133 @@ test-mbr-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/MBRJCH
 	python3 tests/test_mbr_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_mbr_reboot_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_mbr_faults_dos.py $(ROOT)/build/dos/bin/MBRJCHK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+
+$(ROOT)/build/dos/bin/EBRPLAN.EXE: tests/ebr_plan_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-plan-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-plan-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-ebr
+test-ebr: host
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/ebr_plan_probe.c disk.c partition.c bios.c dosraw.c -o $(ROOT)/build/host/ebr-plan-probe
+	python3 tests/test_ebr_plan.py $(ROOT)/build/host/ebr-plan-probe $(ROOT)/build/host/magicdisk
+	python3 tests/test_ebr_cli.py $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_ebr_faults.c disk.c partition.c -o $(ROOT)/build/host/ebr-faults
+	$(ROOT)/build/host/ebr-faults
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_ebr_journal.c disk.c partition.c ebrjournal.c -o $(ROOT)/build/host/ebr-journal-test
+	$(ROOT)/build/host/ebr-journal-test $(ROOT)/build/host/ebr-test.mdj
+
+$(ROOT)/build/dos/bin/EBRTXN.EXE: tests/ebr_txn_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/ebrjournal.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-txn-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-txn-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/ebrjournal.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+$(ROOT)/build/dos/bin/EBRJCHK.EXE: tests/test_ebr_journal.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/ebrjournal.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-journal-test.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-journal-test.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/ebrjournal.obj
+
+.PHONY: test-ebr-dos
+test-ebr-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/EBRJCHK.EXE
+	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL'; exit 1)
+	python3 tests/test_ebr_cli_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_reboot_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_faults_dos.py $(ROOT)/build/dos/bin/EBRJCHK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+
+$(ROOT)/build/dos/bin/EBRLINK.EXE: tests/ebr_link_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-link-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-link-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-ebr-link
+test-ebr-link: host
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/ebr_link_probe.c disk.c partition.c bios.c dosraw.c -o $(ROOT)/build/host/ebr-link-probe
+	python3 tests/test_ebr_link.py $(ROOT)/build/host/ebr-link-probe $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_ebr_link_faults.c disk.c partition.c -o $(ROOT)/build/host/ebr-link-faults
+	$(ROOT)/build/host/ebr-link-faults
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_ebr_link_journal.c disk.c partition.c linkjournal.c -o $(ROOT)/build/host/ebr-link-journal-test
+	$(ROOT)/build/host/ebr-link-journal-test $(ROOT)/build/host/link-test.mdj
+
+$(ROOT)/build/dos/bin/EBRLCHK.EXE: tests/test_ebr_link_faults.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-link-faults.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-link-faults.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj
+
+$(ROOT)/build/dos/bin/EBRLJCK.EXE: tests/test_ebr_link_journal.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/linkjournal.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-link-journal.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-link-journal.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/linkjournal.obj
+
+$(ROOT)/build/dos/bin/LINKTXN.EXE: tests/ebr_link_txn_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/linkjournal.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/ebr-link-txn-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/ebr-link-txn-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/linkjournal.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-ebr-link-dos
+test-ebr-link-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/LINKTXN.EXE $(ROOT)/build/dos/bin/EBRLCHK.EXE $(ROOT)/build/dos/bin/EBRLJCK.EXE
+	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL'; exit 1)
+	python3 tests/test_ebr_link_cli_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_link_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_link_txn_dos.py $(ROOT)/build/dos/bin/LINKTXN.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_link_faults_dos.py $(ROOT)/build/dos/bin/EBRLCHK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_ebr_link_journal_dos.py $(ROOT)/build/dos/bin/EBRLJCK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+
+.PHONY: test-container
+test-container: host
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/container_probe.c disk.c partition.c bios.c dosraw.c -o $(ROOT)/build/host/container-probe
+	python3 tests/test_container.py $(ROOT)/build/host/container-probe $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_container_faults.c disk.c partition.c -o $(ROOT)/build/host/container-faults
+	$(ROOT)/build/host/container-faults
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_container_journal.c disk.c partition.c containerjournal.c -o $(ROOT)/build/host/container-journal
+	$(ROOT)/build/host/container-journal $(ROOT)/build/host/container.mdj
+
+$(ROOT)/build/dos/bin/CONTPRV.EXE: tests/container_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/container-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/container-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+$(ROOT)/build/dos/bin/CONTCHK.EXE: tests/test_container_faults.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/container-faults.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/container-faults.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj
+
+$(ROOT)/build/dos/bin/CONTRCK.EXE: tests/test_container_journal.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/containerjournal.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/container-journal-test.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/container-journal-test.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/containerjournal.obj
+
+$(ROOT)/build/dos/bin/CONTXN.EXE: tests/container_txn_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/containerjournal.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/container-txn.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/container-txn.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/containerjournal.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-container-dos
+test-container-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/CONTXN.EXE $(ROOT)/build/dos/bin/CONTRCK.EXE
+	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL'; exit 1)
+	python3 tests/test_container_cli_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_container_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_container_txn_dos.py $(ROOT)/build/dos/bin/CONTXN.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_container_journal_dos.py $(ROOT)/build/dos/bin/CONTRCK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+
+.PHONY: test-record
+test-record: host
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/record_probe.c disk.c partition.c bios.c dosraw.c -o $(ROOT)/build/host/record-probe
+	python3 tests/test_record.py $(ROOT)/build/host/record-probe $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_record_faults.c disk.c partition.c -o $(ROOT)/build/host/record-faults
+	$(ROOT)/build/host/record-faults
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_record_journal.c disk.c partition.c recordjournal.c -o $(ROOT)/build/host/record-journal
+	$(ROOT)/build/host/record-journal $(ROOT)/build/host/record.mdj
+
+$(ROOT)/build/dos/bin/RECPRV.EXE: tests/record_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/record-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/record-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+$(ROOT)/build/dos/bin/RECCHK.EXE: tests/test_record_faults.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/record-faults.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/record-faults.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj
+
+$(ROOT)/build/dos/bin/RECRCK.EXE: tests/test_record_journal.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/recordjournal.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/record-journal-test.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/record-journal-test.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/recordjournal.obj
+
+$(ROOT)/build/dos/bin/RECTXN.EXE: tests/record_txn_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/recordjournal.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/record-txn.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/record-txn.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/recordjournal.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-record-dos
+test-record-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/RECTXN.EXE $(ROOT)/build/dos/bin/RECRCK.EXE
+	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL'; exit 1)
+	python3 tests/test_record_cli_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_record_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_record_txn_dos.py $(ROOT)/build/dos/bin/RECTXN.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_record_journal_dos.py $(ROOT)/build/dos/bin/RECRCK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"

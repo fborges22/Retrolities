@@ -50,6 +50,17 @@ static void usage(void)
          "Options: --list | --partition N | --surface | --retest-bad\n"
          "         --find-volumes [--search-first LBA] [--search-count SECTORS]\n"
          "         --volume-start LBA             Inspect without a partition entry\n"
+         "         --rebuild-record EBR_LBA NEXT_LBA --volume-start LBA --chs H S\n"
+         "                                       NEXT_LBA zero ends the chain\n"
+         "         --restore-record FILE --apply  Undo whole-EBR reconstruction\n"
+         "         --rebuild-container SLOT BASE SECTORS TYPE --chs H S\n"
+         "                                       TYPE is hex 05, 0F or 85\n"
+         "         --restore-container FILE --apply  Undo container reconstruction\n"
+         "         --link-ebr FROM_LBA TO_LBA --chs H S  Preview a missing chain link\n"
+         "         --restore-link FILE --apply    Undo a chain-link journal\n"
+         "         --rebuild-ebr EBR_LBA --volume-start LBA --chs H S\n"
+         "                                       Preview a missing logical entry\n"
+         "         --restore-ebr FILE --apply     Undo an EBR reconstruction journal\n"
          "         --rebuild-mbr SLOT --volume-start LBA --chs H S\n"
          "                                       Preview an inactive missing MBR entry\n"
          "         --restore-mbr FILE --apply     Undo an MBR reconstruction journal\n"
@@ -98,6 +109,14 @@ static void usage(void)
 enum {
     OP_SCAN,
     OP_MBR,
+    OP_RECORD,
+    OP_RECORD_RESTORE,
+    OP_CONTAINER,
+    OP_CONTAINER_RESTORE,
+    OP_LINK,
+    OP_LINK_RESTORE,
+    OP_EBR,
+    OP_EBR_RESTORE,
     OP_MBR_RESTORE,
     OP_RETEST,
     OP_MARK,
@@ -394,9 +413,12 @@ int main(int argc, char **argv)
     int listing = 0, bios = 0, surface = 0, arg = 2, status;
     int find_volumes = 0, explicit_start = 0, search_range = 0;
     unsigned mbr_slot = 0, mbr_heads = 0, mbr_sectors = 0;
+    unsigned container_type = 0;
+    dt_u32 container_base = 0, container_span = 0;
     dt_u32 search_first = 0, search_count = 0, found_count = 0;
     int op = OP_SCAN, apply = 0, sector_arg = 0, torn = 0;
-    dt_u32 cluster = 0;
+    dt_u32 record_sector = 0, record_next = 0;
+    dt_u32 cluster = 0, ebr_sector = 0, link_source = 0, link_target = 0;
     const char *journal = NULL, *destination = NULL;
     dt_u32 start = 0, size, failures = 0;
 
@@ -488,7 +510,53 @@ int main(int argc, char **argv)
         arg = 3;
     }
     while (arg < argc) {
-        if (!strcmp(argv[arg], "--rebuild-mbr") && op == OP_SCAN && arg + 1 < argc) {
+        if (!strcmp(argv[arg], "--rebuild-record") && op == OP_SCAN && arg + 2 < argc) {
+            if (!dt_parse_u32(argv[++arg], 10, &record_sector) || !record_sector ||
+                !dt_parse_u32(argv[++arg], 10, &record_next)) {
+                puts("Whole-record recovery needs an EBR LBA and next EBR LBA (zero ends chain)");
+                return 2;
+            }
+            op = OP_RECORD;
+        } else if (!strcmp(argv[arg], "--restore-record") && op == OP_SCAN && arg + 1 < argc) {
+            op = OP_RECORD_RESTORE;
+            journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--rebuild-container") && op == OP_SCAN && arg + 4 < argc) {
+            dt_u32 slot, type;
+
+            if (!dt_parse_u32(argv[++arg], 10, &slot) || slot < 1 || slot > 4 ||
+                !dt_parse_u32(argv[++arg], 10, &container_base) || !container_base ||
+                !dt_parse_u32(argv[++arg], 10, &container_span) || !container_span ||
+                !dt_parse_u32(argv[++arg], 16, &type) ||
+                (type != 5 && type != 15 && type != 0x85)) {
+                puts("Container requires slot 1-4, nonzero base/size and type 05, 0F or 85");
+                return 2;
+            }
+            mbr_slot = (unsigned)slot;
+            container_type = (unsigned)type;
+            op = OP_CONTAINER;
+        } else if (!strcmp(argv[arg], "--restore-container") && op == OP_SCAN && arg + 1 < argc) {
+            op = OP_CONTAINER_RESTORE;
+            journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--link-ebr") && op == OP_SCAN && arg + 2 < argc) {
+            if (!dt_parse_u32(argv[++arg], 10, &link_source) || !link_source ||
+                !dt_parse_u32(argv[++arg], 10, &link_target) || !link_target) {
+                puts("EBR link requires nonzero source and target disk LBAs");
+                return 2;
+            }
+            op = OP_LINK;
+        } else if (!strcmp(argv[arg], "--restore-link") && op == OP_SCAN && arg + 1 < argc) {
+            op = OP_LINK_RESTORE;
+            journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--rebuild-ebr") && op == OP_SCAN && arg + 1 < argc) {
+            if (!dt_parse_u32(argv[++arg], 10, &ebr_sector) || !ebr_sector) {
+                puts("EBR sector must be a nonzero disk LBA");
+                return 2;
+            }
+            op = OP_EBR;
+        } else if (!strcmp(argv[arg], "--restore-ebr") && op == OP_SCAN && arg + 1 < argc) {
+            op = OP_EBR_RESTORE;
+            journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--rebuild-mbr") && op == OP_SCAN && arg + 1 < argc) {
             dt_u32 value;
 
             if (!dt_parse_u32(argv[++arg], 10, &value) || value < 1 || value > 4) {
@@ -675,18 +743,212 @@ int main(int argc, char **argv)
         }
         arg++;
     }
-    if (op == OP_MBR || op == OP_MBR_RESTORE) {
-        DtMbrPlan plan;
-        int restore = op == OP_MBR_RESTORE;
+    if (op == OP_RECORD || op == OP_RECORD_RESTORE) {
+        DtEbrRecordPlan record;
+        int restore = op == OP_RECORD_RESTORE;
 
         if (bios == 2 || index || listing || surface || find_volumes || search_range ||
             fat_source || destination || (torn && (!restore || !apply)) || (apply && !journal) ||
             (!apply && journal) ||
             (restore && (!apply || explicit_start || boot_source || mbr_heads || mbr_sectors)) ||
             (!restore && (!explicit_start || !mbr_heads || !mbr_sectors))) {
-            puts("MBR reconstruction needs a whole disk, an explicit volume start and CHS "
+            puts("Whole-record recovery needs a whole disk, volume start and CHS geometry.");
+            puts("Undo needs --restore-record FILE --apply; writes require a journal.");
+            return 2;
+        }
+        status = bios    ? dt_bios_open(&disk, drive, err)
+                 : apply ? dt_image_open_write(&disk, argv[1], err)
+                         : dt_image_open(&disk, argv[1], err);
+        if (!status) {
+            puts(err);
+            return 2;
+        }
+        status = restore ? dt_ebr_record_review_journal(&disk, journal, &record, err)
+                         : dt_ebr_record_plan(&disk,
+                                              record_sector,
+                                              start,
+                                              boot_source,
+                                              record_next,
+                                              mbr_heads,
+                                              mbr_sectors,
+                                              &record,
+                                              err);
+        if (status) {
+            const DtMbrPlan *logical = &record.logical.entry;
+
+            printf("EBR record %s: sector %lu, volume LBA %lu, next EBR %lu\n",
+                   restore ? "undo" : "preview",
+                   (unsigned long)record.logical.sector,
+                   (unsigned long)logical->start,
+                   (unsigned long)record.next);
+            printf("FAT%u, %lu sectors, boot-source %u; CHS %u/%u; %u tail volumes\n",
+                   logical->bits,
+                   (unsigned long)logical->total,
+                   logical->boot_source,
+                   logical->heads,
+                   logical->sectors,
+                   record.witness_count);
+            for (i = 0; i < record.witness_count; i++)
+                printf("  EBR %lu: volume LBA %lu, sectors %lu, type %02X\n",
+                       (unsigned long)record.witness[i].record_sector,
+                       (unsigned long)record.witness[i].volume_start,
+                       (unsigned long)dt_dword(record.witness[i].record + 458),
+                       record.witness[i].record[450]);
+            puts("Only the selected EBR table/signature changes. Inspect recovered files first.");
+        }
+        if (status && apply && bios)
+            status = dt_bios_enable_writes(&disk, record.logical.sector, 1, journal, err);
+        if (status && apply)
+            status = restore ? dt_ebr_record_restore(&disk, journal, torn, err)
+                             : dt_ebr_record_apply(&record, journal, err);
+        if (!status)
+            puts(err);
+        else
+            puts(!apply    ? "Preview only; no sectors written."
+                 : restore ? "EBR record restored and verified."
+                           : "EBR record reconstructed and verified.");
+        dt_ebr_record_clear(&record);
+        if (!close_disk(&disk, bios))
+            status = 0;
+        return status ? 0 : 2;
+    }
+    if (op == OP_CONTAINER || op == OP_CONTAINER_RESTORE) {
+        DtContainerPlan container;
+        int restore = op == OP_CONTAINER_RESTORE;
+
+        if (bios == 2 || index || listing || surface || find_volumes || search_range ||
+            explicit_start || boot_source || fat_source || destination ||
+            (torn && (!restore || !apply)) || (apply && !journal) || (!apply && journal) ||
+            (restore && (!apply || mbr_heads || mbr_sectors)) ||
+            (!restore && (!mbr_heads || !mbr_sectors))) {
+            puts("Container recovery needs a whole disk, explicit extent/type and CHS geometry.");
+            puts("Undo needs --restore-container FILE --apply; writes require a journal.");
+            return 2;
+        }
+        status = bios    ? dt_bios_open(&disk, drive, err)
+                 : apply ? dt_image_open_write(&disk, argv[1], err)
+                         : dt_image_open(&disk, argv[1], err);
+        if (!status) {
+            puts(err);
+            return 2;
+        }
+        status = restore ? dt_container_review_journal(&disk, journal, &container, err)
+                         : dt_container_plan(&disk,
+                                             mbr_slot,
+                                             container_base,
+                                             container_span,
+                                             container_type,
+                                             mbr_heads,
+                                             mbr_sectors,
+                                             &container,
+                                             err);
+        if (status) {
+            printf("Container %s: MBR slot %u, type %02X, %u recovered volumes\n",
+                   restore ? "undo" : "preview",
+                   container.slot,
+                   container.type,
+                   container.witness_count);
+            printf("Container LBA %lu, sectors %lu; CHS %u heads / %u sectors\n",
+                   (unsigned long)container.base,
+                   (unsigned long)container.span,
+                   container.heads,
+                   container.sectors);
+            for (i = 0; i < container.witness_count; i++)
+                printf("  EBR %lu: volume LBA %lu, sectors %lu, type %02X\n",
+                       (unsigned long)container.witness[i].record_sector,
+                       (unsigned long)container.witness[i].volume_start,
+                       (unsigned long)dt_dword(container.witness[i].record + 458),
+                       container.witness[i].record[450]);
+            puts("Only the MBR entry/signature changes; inspect every recovered volume first.");
+        }
+        if (status && apply && bios)
+            status = dt_bios_enable_mbr_write(&disk, journal, err);
+        if (status && apply)
+            status = restore ? dt_container_restore(&disk, journal, torn, err)
+                             : dt_container_apply(&container, journal, err);
+        if (!status)
+            puts(err);
+        else
+            puts(!apply    ? "Preview only; no sectors written."
+                 : restore ? "Container restored and verified."
+                           : "Container inserted and verified.");
+        dt_container_clear(&container);
+        if (!close_disk(&disk, bios))
+            status = 0;
+        return status ? 0 : 2;
+    }
+    if (op == OP_LINK || op == OP_LINK_RESTORE) {
+        DtEbrLinkPlan link;
+        int restore = op == OP_LINK_RESTORE;
+
+        if (bios == 2 || index || listing || surface || find_volumes || search_range ||
+            explicit_start || boot_source || fat_source || destination ||
+            (torn && (!restore || !apply)) || (apply && !journal) || (!apply && journal) ||
+            (restore && (!apply || mbr_heads || mbr_sectors)) ||
+            (!restore && (!mbr_heads || !mbr_sectors))) {
+            puts("EBR links need a whole disk, explicit source/target LBAs and CHS geometry.");
+            puts("Undo needs --restore-link FILE --apply; writes require a journal.");
+            return 2;
+        }
+        status = bios    ? dt_bios_open(&disk, drive, err)
+                 : apply ? dt_image_open_write(&disk, argv[1], err)
+                         : dt_image_open(&disk, argv[1], err);
+        if (!status) {
+            puts(err);
+            return 2;
+        }
+        status = restore ? dt_ebr_link_review_journal(&disk, journal, &link, err)
+                         : dt_ebr_link_plan(
+                               &disk, link_source, link_target, mbr_heads, mbr_sectors, &link, err);
+        if (status) {
+            printf("EBR link %s: source %lu, target %lu, %u recovered volumes\n",
+                   restore ? "undo" : "preview",
+                   (unsigned long)link.sector,
+                   (unsigned long)link.target,
+                   link.recovered);
+            printf("Container LBA %lu, sectors %lu; CHS %u heads / %u sectors\n",
+                   (unsigned long)link.base,
+                   (unsigned long)link.span,
+                   link.heads,
+                   link.sectors);
+            for (i = 0; i < link.witness_count; i++)
+                printf("  EBR %lu: volume LBA %lu, sectors %lu, type %02X\n",
+                       (unsigned long)link.witness[i].record_sector,
+                       (unsigned long)link.witness[i].volume_start,
+                       (unsigned long)dt_dword(link.witness[i].record + 458),
+                       link.witness[i].record[450]);
+            puts("Only the selected link entry changes; inspect every recovered volume first.");
+        }
+        if (status && apply && bios)
+            status = dt_bios_enable_writes(&disk, link.sector, 1, journal, err);
+        if (status && apply)
+            status = restore ? dt_ebr_link_restore(&disk, journal, torn, err)
+                             : dt_ebr_link_apply(&link, journal, err);
+        if (!status)
+            puts(err);
+        else
+            puts(!apply    ? "Preview only; no sectors written."
+                 : restore ? "EBR link restored and verified."
+                           : "EBR link inserted and verified.");
+        dt_ebr_link_clear(&link);
+        if (!close_disk(&disk, bios))
+            status = 0;
+        return status ? 0 : 2;
+    }
+    if (op == OP_MBR || op == OP_MBR_RESTORE || op == OP_EBR || op == OP_EBR_RESTORE) {
+        DtMbrPlan plan;
+        DtEbrPlan logical;
+        int ebr = op == OP_EBR || op == OP_EBR_RESTORE;
+        int restore = op == OP_MBR_RESTORE || op == OP_EBR_RESTORE;
+
+        if (bios == 2 || index || listing || surface || find_volumes || search_range ||
+            fat_source || destination || (torn && (!restore || !apply)) || (apply && !journal) ||
+            (!apply && journal) ||
+            (restore && (!apply || explicit_start || boot_source || mbr_heads || mbr_sectors)) ||
+            (!restore && (!explicit_start || !mbr_heads || !mbr_sectors))) {
+            puts("Partition reconstruction needs a whole disk, an explicit volume start and CHS "
                  "geometry.");
-            puts("MBR undo needs --restore-mbr FILE --apply; writes require a journal.");
+            puts("Undo needs --restore-mbr/--restore-ebr FILE --apply; writes require a journal.");
             return 2;
         }
         status = bios    ? dt_bios_open(&disk, drive, err)
@@ -697,10 +959,21 @@ int main(int argc, char **argv)
             return 2;
         }
         if (!restore) {
-            status = dt_mbr_plan(
-                &disk, mbr_slot, start, boot_source, mbr_heads, mbr_sectors, &plan, err);
+            if (ebr) {
+                status = dt_ebr_plan(
+                    &disk, ebr_sector, start, boot_source, mbr_heads, mbr_sectors, &logical, err);
+                if (status)
+                    plan = logical.entry;
+            } else {
+                status = dt_mbr_plan(
+                    &disk, mbr_slot, start, boot_source, mbr_heads, mbr_sectors, &plan, err);
+            }
             if (status) {
-                printf("MBR preview: slot %u, FAT%u, LBA %lu, sectors %lu, type %02X\n",
+                if (ebr)
+                    printf("EBR preview: disk LBA %lu; existing links preserved.\n",
+                           (unsigned long)logical.sector);
+                printf("%s preview: slot %u, FAT%u, LBA %lu, sectors %lu, type %02X\n",
+                       ebr ? "Logical partition" : "MBR",
                        plan.slot,
                        plan.bits,
                        (unsigned long)plan.start,
@@ -710,34 +983,50 @@ int main(int argc, char **argv)
                        plan.heads,
                        plan.sectors,
                        plan.boot_source);
-                printf("BPB hidden sectors: %lu%s\n",
-                       (unsigned long)dt_dword(plan.volume_boot + 28),
-                       dt_dword(plan.volume_boot + 28) == plan.start ? ""
-                                                                     : " (MISMATCH; unchanged)");
+                if (ebr)
+                    printf("BPB hidden sectors: %lu; EBR-relative start: %lu (unchanged)\n",
+                           (unsigned long)dt_dword(plan.volume_boot + 28),
+                           (unsigned long)(plan.start - logical.sector));
+                else {
+                    printf("BPB hidden sectors: %lu%s\n",
+                           (unsigned long)dt_dword(plan.volume_boot + 28),
+                           dt_dword(plan.volume_boot + 28) == plan.start
+                               ? ""
+                               : " (MISMATCH; unchanged)");
+                }
                 puts(
                     "Inserts an inactive partition; bootstrap and occupied entries are preserved.");
                 puts("Review candidate contents first. This does not repair boot code or the BPB.");
             }
         } else {
-            status = 1;
+            status = ebr ? dt_ebr_review_journal(&disk, journal, &logical, err) : 1;
+            if (status && ebr)
+                printf("EBR undo: disk LBA %lu\n", (unsigned long)logical.sector);
         }
         if (status && apply && bios)
-            status = dt_bios_enable_mbr_write(&disk, journal, err);
-        if (status && apply)
-            status = restore ? dt_mbr_restore(&disk, journal, torn, err)
-                             : dt_mbr_apply(&plan, journal, err);
+            status = ebr ? dt_bios_enable_writes(&disk, logical.sector, 1, journal, err)
+                         : dt_bios_enable_mbr_write(&disk, journal, err);
+        if (status && apply) {
+            if (ebr)
+                status = restore ? dt_ebr_restore(&disk, journal, torn, err)
+                                 : dt_ebr_apply(&logical, journal, err);
+            else
+                status = restore ? dt_mbr_restore(&disk, journal, torn, err)
+                                 : dt_mbr_apply(&plan, journal, err);
+        }
         if (!status)
             puts(err);
         else
             puts(!apply    ? "Preview only; no sectors written."
-                 : restore ? "MBR restored and verified."
-                           : "MBR reconstructed and verified.");
+                 : restore ? (ebr ? "EBR restored and verified." : "MBR restored and verified.")
+                           : (ebr ? "EBR reconstructed and verified."
+                                  : "MBR reconstructed and verified."));
         if (!close_disk(&disk, bios))
             status = 0;
         return status ? 0 : 2;
     }
     if (mbr_heads || mbr_sectors) {
-        puts("CHS geometry options apply only to --rebuild-mbr.");
+        puts("CHS geometry options apply only to partition reconstruction or --link-ebr.");
         return 2;
     }
     if ((torn && (op != OP_RESTORE || !apply)) || (fat_source && op != OP_TREE) ||

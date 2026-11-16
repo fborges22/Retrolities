@@ -121,7 +121,7 @@ int dt_fat(DtVolume *volume, dt_u32 cluster, dt_u32 *value);
 
 /* Read-only whole-disk preview for one missing primary MBR entry. Geometry
    is supplied explicitly, not guessed from the candidate BPB. Callers must
-   use this result only when the builder succeeds; no apply API exists yet. */
+   use this result only when the builder succeeds. Apply revalidates it. */
 typedef struct {
     DtDisk *disk;
     dt_u32 disk_sectors, start, total;
@@ -133,6 +133,88 @@ int dt_mbr_plan(DtDisk *disk, unsigned slot, dt_u32 start, unsigned boot_source,
                 unsigned sectors, DtMbrPlan *plan, char *err);
 /* Recompute and compare a reviewed preview before creating its journal. */
 int dt_mbr_revalidate(const DtMbrPlan *plan, char *err);
+
+/* Read-only repair of an empty logical entry in a reachable EBR.
+   Existing links are preserved. The embedded entry is not an MBR apply plan. */
+typedef struct {
+    DtMbrPlan entry;
+    dt_u32 sector;
+    unsigned char mbr[512];
+} DtEbrPlan;
+
+int dt_ebr_plan(DtDisk *disk, dt_u32 sector, dt_u32 start, unsigned boot_source, unsigned heads,
+                unsigned sectors, DtEbrPlan *plan, char *err);
+
+/* Exact reviewed metadata for each newly linked volume. */
+typedef struct {
+    dt_u32 record_sector, volume_start;
+    unsigned char record[512], boot[512];
+} DtLinkWitness;
+
+/* Read-only preview for one missing link to a surviving EBR chain.
+   A successful result owns witness memory: clear it before reuse or disposal.
+   Failed builders leave a zeroed result. Do not shallow-copy ownership. */
+typedef struct {
+    DtDisk *disk;
+    dt_u32 disk_sectors, sector, target, base, span;
+    unsigned heads, sectors, recovered;
+    unsigned char mbr[512], before[512], after[512];
+    unsigned witness_count;
+    DtLinkWitness *witness;
+} DtEbrLinkPlan;
+
+/* Recreate an entirely empty reachable EBR table and, optionally, its link.
+   The logical plan binds the selected volume; witnesses bind the surviving tail.
+   Successful results own witness memory and must be cleared before reuse. */
+typedef struct {
+    DtEbrPlan logical;
+    dt_u32 next;
+    unsigned char after[512];
+    unsigned witness_count;
+    DtLinkWitness *witness;
+} DtEbrRecordPlan;
+
+int dt_ebr_record_plan(DtDisk *disk, dt_u32 sector, dt_u32 start, unsigned boot_source, dt_u32 next,
+                       unsigned heads, unsigned sectors, DtEbrRecordPlan *plan, char *err);
+int dt_ebr_record_revalidate(const DtEbrRecordPlan *plan, char *err);
+void dt_ebr_record_clear(DtEbrRecordPlan *plan);
+int dt_ebr_record_apply(const DtEbrRecordPlan *plan, const char *journal, char *err);
+int dt_ebr_record_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
+int dt_ebr_record_review_journal(DtDisk *disk, const char *journal, DtEbrRecordPlan *plan,
+                                 char *err);
+
+/* Container reconstruction preview. Successful plans own their witnesses;
+   clear them before reuse. A failed builder returns a zeroed plan. */
+typedef struct {
+    DtDisk *disk;
+    dt_u32 disk_sectors, base, span;
+    unsigned slot, type, heads, sectors;
+    unsigned char before[512], after[512];
+    unsigned witness_count;
+    DtLinkWitness *witness;
+} DtContainerPlan;
+
+int dt_container_plan(DtDisk *disk, unsigned slot, dt_u32 base, dt_u32 span, unsigned type,
+                      unsigned heads, unsigned sectors, DtContainerPlan *plan, char *err);
+void dt_container_clear(DtContainerPlan *plan);
+int dt_container_revalidate(const DtContainerPlan *plan, char *err);
+int dt_container_apply(const DtContainerPlan *plan, const char *journal, char *err);
+int dt_container_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
+int dt_container_review_journal(DtDisk *disk, const char *journal, DtContainerPlan *plan,
+                                char *err);
+
+int dt_ebr_link_apply(const DtEbrLinkPlan *plan, const char *journal, char *err);
+int dt_ebr_link_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
+int dt_ebr_link_review_journal(DtDisk *disk, const char *journal, DtEbrLinkPlan *plan, char *err);
+void dt_ebr_link_clear(DtEbrLinkPlan *plan);
+int dt_ebr_link_revalidate(const DtEbrLinkPlan *plan, char *err);
+int dt_ebr_link_plan(DtDisk *disk, dt_u32 sector, dt_u32 target, unsigned heads, unsigned sectors,
+                     DtEbrLinkPlan *plan, char *err);
+
+int dt_ebr_revalidate(const DtEbrPlan *plan, char *err);
+int dt_ebr_review_journal(DtDisk *disk, const char *journal, DtEbrPlan *plan, char *err);
+int dt_ebr_apply(const DtEbrPlan *plan, const char *journal, char *err);
+int dt_ebr_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
 int dt_mbr_apply(const DtMbrPlan *plan, const char *journal, char *err);
 int dt_mbr_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
 

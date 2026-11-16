@@ -392,3 +392,69 @@ MBR RECONSTRUCTION
   Undo interrupted MBR / --accept-torn accepts only saved byte mixtures.
   BIOS writes require an unmounted source and separate IDE journal disk.
   DOS may mount the reconstructed partition after reboot and prevent undo.
+
+LOGICAL PARTITION ENTRY RECONSTRUCTION
+  Disk > Reconstruct EBR restores an empty logical-volume entry in a
+  record that remains reachable through the existing extended chain.
+  Enter EBR disk LBA, volume disk LBA, boot source and BIOS geometry.
+  Review, choose a new journal, and type EBR. Existing links stay unchanged.
+  MAGICDSK DISK.IMG --rebuild-ebr 63 --volume-start 126 --chs 16 63
+  Add --apply --journal E.MDJ to write after reviewing the preview.
+  MAGICDSK DISK.IMG --restore-ebr E.MDJ --apply
+  EBR journals bind the original MBR, selected record and volume boot.
+  Undo displays the EBR sector and requires typing RESTORE in the TUI.
+  Interrupted EBR undo accepts only saved before/after byte mixtures.
+  Existing MBR, links, bootstrap, BPB fields and filesystem data stay.
+  Unreachable records, ambiguous entries, loops and overlaps are refused.
+  Missing chain links and extended containers are not reconstructed.
+  BIOS writes still require an unmounted source and separate journal disk.
+
+RECONNECTING AN EBR CHAIN
+  Disk > Reconnect EBR chain previews one missing link to intact records.
+  Enter source and target EBR disk LBAs, then BIOS geometry.
+  Review all recovered volumes using arrows, PgUp/PgDn or Home/End.
+  Choose a new journal and type LINK to apply.
+  MAGICDSK DISK.IMG --link-ebr 63 3069 --chs 16 63
+  Add --apply --journal LINK.MDJ after reviewing the preview.
+  MAGICDSK DISK.IMG --restore-link LINK.MDJ --apply
+  Every recovered record and primary FAT boot sector is saved and checked.
+  Only an entirely empty link changes; loops and overlaps are refused.
+  Other entries, links, MBR and filesystem data are preserved.
+  Later changes to reviewed chain metadata prevent undo.
+  BIOS writes require the entire source disk to be unmounted.
+  Separate commands rebuild missing containers and empty EBR tables.
+
+MISSING EXTENDED CONTAINERS
+Disk > Rebuild extended container restores one empty MBR slot around a
+surviving FAT logical-volume chain. Enter the slot, first EBR disk LBA,
+total container sectors, type (hex 05, 0F or 85), and BIOS geometry.
+Review every recovered volume, choose a new journal and type CONTAINER.
+The extent is explicit: surviving links cannot prove the original free space.
+
+  MAGICDSK DISK.IMG --rebuild-container 1 63 30000 0F --chs 16 63
+Add --apply --journal C.MDJ to write after review.
+  MAGICDSK DISK.IMG --restore-container C.MDJ --apply
+Add --accept-torn only for interrupted writes with saved before/after bytes.
+
+Only the selected MBR entry/signature changes. All EBR and boot metadata is
+revalidated. Existing containers, overlaps, GPT and ambiguous chains refuse
+repair. BIOS writes require an unmounted disk and a separate journal disk.
+After reboot DOS may mount recovered volumes, preventing undo. Empty EBR
+tables have a separate whole-record reconstruction command.
+
+EMPTY EBR TABLES
+Disk > Rebuild whole EBR restores a reachable record with four empty entries.
+Enter the EBR disk LBA, volume disk LBA, next EBR LBA (0 ends the chain),
+boot source (0 primary, 6 FAT32 backup), and BIOS geometry. Review the selected
+volume and every recovered tail volume. Choose a new journal and type RECORD.
+
+  MAGICDSK DISK.IMG --rebuild-record 63 3069 --volume-start 126 --chs 16 63
+Add --apply --journal R.MDJ to write the EBR after journal persistence.
+  MAGICDSK DISK.IMG --restore-record R.MDJ --apply
+Use --accept-torn, or Disk > Undo interrupted record, only for interrupted
+writes composed of saved before/after bytes. Both undo modes require review.
+
+The original MBR, EBR, volume boot and recovered tail metadata are revalidated.
+Only the selected EBR table/signature changes; surviving other bytes remain.
+Ambiguous entries, overlaps, loops, GPT and unreadable metadata refuse repair.
+BIOS repairs require an unmounted disk and a separate journal disk.

@@ -2582,66 +2582,112 @@ static int mbr_number(const char *title, dt_u32 *value)
     return 1;
 }
 
-static void mbr_transaction(int restore, int torn)
+static void partition_transaction(int restore, int torn, int ebr)
 {
     DtMbrPlan plan;
+    DtEbrPlan logical;
     DtDisk target;
     dt_u32 slot, start, source, heads, sectors;
-    char journal[128], confirm[32], path[128], err[160];
+    char journal[128], confirm[32], path[128], err[160], title[80];
     char extent[96], geometry[96], hidden[96];
+    const char *kind = ebr ? "EBR" : "MBR";
     const char *lines[6];
     int ok, opened;
 
     if (!restore) {
-        if (!mbr_number(" MBR: EMPTY SLOT (1..4) ", &slot) ||
-            !mbr_number(" MBR: CANDIDATE START LBA ", &start) ||
-            !mbr_number(" MBR: BOOT SOURCE (0 = PRIMARY) ", &source) ||
-            !mbr_number(" MBR: BIOS GEOMETRY HEADS ", &heads) ||
-            !mbr_number(" MBR: BIOS SECTORS PER TRACK ", &sectors))
+        if (!mbr_number(ebr ? " EBR: RECORD DISK LBA " : " MBR: EMPTY SLOT (1..4) ", &slot))
             return;
-        if (!dt_mbr_plan(&ui.disk, slot, start, source, heads, sectors, &plan, err)) {
+        sprintf(title, " %s: CANDIDATE START LBA ", kind);
+        if (!mbr_number(title, &start))
+            return;
+        sprintf(title, " %s: BOOT SOURCE (0 = PRIMARY) ", kind);
+        if (!mbr_number(title, &source))
+            return;
+        sprintf(title, " %s: BIOS GEOMETRY HEADS ", kind);
+        if (!mbr_number(title, &heads))
+            return;
+        sprintf(title, " %s: BIOS SECTORS PER TRACK ", kind);
+        if (!mbr_number(title, &sectors))
+            return;
+        if (ebr) {
+            ok = dt_ebr_plan(&ui.disk, slot, start, source, heads, sectors, &logical, err);
+            if (ok)
+                plan = logical.entry;
+        } else {
+            ok = dt_mbr_plan(&ui.disk, slot, start, source, heads, sectors, &plan, err);
+        }
+        if (!ok) {
             strcpy(ui.status, err);
             return;
         }
-        sprintf(extent,
-                "Slot %u: FAT%u, LBA %lu, %lu sectors, inactive",
-                plan.slot,
-                plan.bits,
-                (unsigned long)plan.start,
-                (unsigned long)plan.total);
+        if (ebr)
+            sprintf(extent,
+                    "EBR %lu: FAT%u, LBA %lu, %lu sectors",
+                    (unsigned long)logical.sector,
+                    plan.bits,
+                    (unsigned long)plan.start,
+                    (unsigned long)plan.total);
+        else
+            sprintf(extent,
+                    "Slot %u: FAT%u, LBA %lu, %lu sectors, inactive",
+                    plan.slot,
+                    plan.bits,
+                    (unsigned long)plan.start,
+                    (unsigned long)plan.total);
         sprintf(geometry,
                 "CHS %u heads / %u sectors; boot source %u",
                 plan.heads,
                 plan.sectors,
                 plan.boot_source);
-        sprintf(hidden,
-                "BPB hidden sectors %lu%s",
-                (unsigned long)dt_dword(plan.volume_boot + 28),
-                dt_dword(plan.volume_boot + 28) == plan.start ? "" : " MISMATCH (unchanged)");
+        if (ebr)
+            sprintf(hidden,
+                    "BPB hidden %lu; EBR relative %lu (unchanged)",
+                    (unsigned long)dt_dword(plan.volume_boot + 28),
+                    (unsigned long)(plan.start - logical.sector));
+        else {
+            sprintf(hidden,
+                    "BPB hidden sectors %lu%s",
+                    (unsigned long)dt_dword(plan.volume_boot + 28),
+                    dt_dword(plan.volume_boot + 28) == plan.start ? "" : " MISMATCH (unchanged)");
+        }
         lines[0] = extent;
         lines[1] = geometry;
         lines[2] = hidden;
-        lines[3] = "Bootstrap and occupied entries are preserved.";
+        lines[3] = ebr ? "Existing chain links, MBR and bootstrap are preserved."
+                       : "Bootstrap and occupied entries are preserved.";
         lines[4] = "Inspect candidate files before reconstructing the table.";
         lines[5] = "This does not repair boot code or boot-sector geometry.";
-        if (!modal(" REVIEW MBR RECONSTRUCTION ", lines, 6))
+        sprintf(title, " REVIEW %s RECONSTRUCTION ", kind);
+        if (!modal(title, lines, 6))
             return;
     } else {
-        lines[0] = "Restore only a MagicDisk MBR reconstruction journal.";
+        sprintf(extent, "Restore only a MagicDisk %s reconstruction journal.", kind);
+        lines[0] = extent;
         lines[1] = "Candidate identity and original insertion are revalidated.";
         lines[2] = torn ? "Allows only saved before/after byte mixtures."
-                        : "Current MBR must exactly match a saved before/after sector.";
+                        : "Current record must match a saved before/after sector.";
         lines[3] = "Later unrelated changes are refused. Journal is retained.";
-        if (!modal(torn ? " REVIEW INTERRUPTED MBR UNDO " : " REVIEW MBR UNDO ", lines, 4))
+        sprintf(title, " REVIEW %s%s UNDO ", torn ? "INTERRUPTED " : "", kind);
+        if (!modal(title, lines, 4))
             return;
     }
-    if (!prompt(restore ? " MBR JOURNAL TO RESTORE " : " NEW MBR JOURNAL PATH ",
-                journal,
-                sizeof(journal)) ||
-        !prompt(restore ? " TYPE RESTORE TO UNDO MBR " : " TYPE MBR TO RECONSTRUCT TABLE ",
-                confirm,
-                sizeof(confirm)) ||
-        strcmp(confirm, restore ? "RESTORE" : "MBR"))
+    sprintf(title, restore ? " %s JOURNAL TO RESTORE " : " NEW %s JOURNAL PATH ", kind);
+    if (!prompt(title, journal, sizeof(journal)))
+        return;
+    if (restore && ebr) {
+        if (!dt_ebr_review_journal(&ui.disk, journal, &logical, err)) {
+            strcpy(ui.status, err);
+            return;
+        }
+        sprintf(
+            extent, "Undo logical partition at EBR disk LBA %lu", (unsigned long)logical.sector);
+        lines[0] = extent;
+        lines[1] = "Only this extended record is eligible for writing.";
+        if (!modal(" REVIEW EBR JOURNAL TARGET ", lines, 2))
+            return;
+    }
+    sprintf(title, restore ? " TYPE RESTORE TO UNDO %s " : " TYPE %s TO RECONSTRUCT TABLE ", kind);
+    if (!prompt(title, confirm, sizeof(confirm)) || strcmp(confirm, restore ? "RESTORE" : kind))
         return;
     if (!confirm_bios_write())
         return;
@@ -2652,13 +2698,17 @@ static void mbr_transaction(int restore, int torn)
         ui.bios ? dt_bios_open(&target, ui.drive, err) : dt_image_open_write(&target, path, err);
     ok = opened;
     if (ok && ui.bios)
-        ok = dt_bios_enable_mbr_write(&target, journal, err);
+        ok = ebr ? dt_bios_enable_writes(&target, logical.sector, 1, journal, err)
+                 : dt_bios_enable_mbr_write(&target, journal, err);
     if (ok) {
-        if (restore)
-            ok = dt_mbr_restore(&target, journal, torn, err);
-        else {
+        if (ebr) {
+            logical.entry.disk = &target;
+            ok = restore ? dt_ebr_restore(&target, journal, torn, err)
+                         : dt_ebr_apply(&logical, journal, err);
+        } else {
             plan.disk = &target;
-            ok = dt_mbr_apply(&plan, journal, err);
+            ok = restore ? dt_mbr_restore(&target, journal, torn, err)
+                         : dt_mbr_apply(&plan, journal, err);
         }
     }
     if (opened) {
@@ -2668,10 +2718,442 @@ static void mbr_transaction(int restore, int torn)
             dt_image_close(&target);
     }
     open_disk(path, ui.bios, ui.drive);
+    if (ok)
+        sprintf(ui.status,
+                "%s %s and verified. Journal retained.",
+                kind,
+                restore ? "restored" : "reconstructed");
+    else
+        strcpy(ui.status, err);
+}
+
+static int review_link(const DtEbrLinkPlan *plan, int restore)
+{
+    unsigned top = 0, i;
+    char line[100];
+    int k;
+
+    for (;;) {
+        draw();
+        box(5, 3, 70, 19, restore ? " REVIEW EBR LINK UNDO " : " REVIEW EBR CHAIN LINK ");
+        sprintf(line,
+                "Source EBR %lu -> target EBR %lu; %u volumes",
+                (unsigned long)plan->sector,
+                (unsigned long)plan->target,
+                plan->recovered);
+        text(8, 5, BRIGHT, line);
+        sprintf(line,
+                "Container %lu + %lu sectors; CHS %u/%u",
+                (unsigned long)plan->base,
+                (unsigned long)plan->span,
+                plan->heads,
+                plan->sectors);
+        text(8, 6, CYAN, line);
+        text(8, 7, CYAN, "EBR disk LBA   Volume disk LBA       Sectors    Type");
+        for (i = 0; i < 9 && top + i < plan->witness_count; i++) {
+            const DtLinkWitness *witness = &plan->witness[top + i];
+
+            sprintf(line,
+                    "%12lu     %12lu  %12lu      %02X",
+                    (unsigned long)witness->record_sector,
+                    (unsigned long)witness->volume_start,
+                    (unsigned long)dt_dword(witness->record + 458),
+                    witness->record[450]);
+            text(8, 8 + i, WORK, line);
+        }
+        sprintf(line,
+                "Records %u-%u of %u; PgUp/PgDn or arrows scroll",
+                top + 1,
+                top + 9 < plan->witness_count ? top + 9 : plan->witness_count,
+                plan->witness_count);
+        text(8, 18, CYAN, line);
+        text(8, 19, BRIGHT, "Only the source link changes. Inspect recovered files first.");
+        text(8, 20, FOCUS, " Enter: accept review   Esc: cancel   Home/End: first/last ");
+        flush();
+        k = key();
+        if (k == 13 || k == 27)
+            return k == 13;
+        if (k == NAV_HOME)
+            top = 0;
+        else if (k == NAV_END)
+            top = plan->witness_count > 9 ? plan->witness_count - 9 : 0;
+        else if ((k == NAV_DOWN || k == NAV_PGDN) && top + 9 < plan->witness_count) {
+            top += k == NAV_PGDN ? 9 : 1;
+            if (top + 9 > plan->witness_count)
+                top = plan->witness_count - 9;
+        } else if (k == NAV_UP || k == NAV_PGUP) {
+            unsigned step = k == NAV_PGUP ? 9 : 1;
+
+            top = top > step ? top - step : 0;
+        }
+    }
+}
+
+static void link_transaction(int restore, int torn)
+{
+    DtEbrLinkPlan plan;
+    DtDisk target;
+    dt_u32 from, to, heads, sectors;
+    char journal[128], confirm[32], path[128], err[160];
+    int ok, opened;
+
+    memset(&plan, 0, sizeof(plan));
+    if (restore) {
+        if (torn) {
+            const char *lines[] = {"Undo a link after an interrupted write.",
+                                   "Only saved before/after byte mixtures are accepted.",
+                                   "Every recovered record and boot sector is revalidated."};
+
+            if (!modal(" INTERRUPTED EBR LINK UNDO ", lines, 3))
+                return;
+        }
+        if (!prompt(" LINK JOURNAL TO RESTORE ", journal, sizeof(journal)))
+            return;
+        ok = dt_ebr_link_review_journal(&ui.disk, journal, &plan, err);
+    } else {
+        if (!mbr_number(" LINK: SOURCE EBR DISK LBA ", &from) ||
+            !mbr_number(" LINK: TARGET EBR DISK LBA ", &to) ||
+            !mbr_number(" LINK: BIOS GEOMETRY HEADS ", &heads) ||
+            !mbr_number(" LINK: BIOS SECTORS PER TRACK ", &sectors))
+            return;
+        ok = dt_ebr_link_plan(&ui.disk, from, to, heads, sectors, &plan, err);
+    }
+    if (!ok) {
+        strcpy(ui.status, err);
+        goto done;
+    }
+    if (!review_link(&plan, restore))
+        goto done;
+    if (!restore && !prompt(" NEW LINK JOURNAL PATH ", journal, sizeof(journal)))
+        goto done;
+    if (!prompt(restore ? " TYPE RESTORE TO UNDO LINK " : " TYPE LINK TO RECONNECT CHAIN ",
+                confirm,
+                sizeof(confirm)) ||
+        strcmp(confirm, restore ? "RESTORE" : "LINK"))
+        goto done;
+    if (!confirm_bios_write())
+        goto done;
+    strcpy(path, ui.source);
+    release_disk_handle();
+    ui.opened = ui.mounted = 0;
+    opened =
+        ui.bios ? dt_bios_open(&target, ui.drive, err) : dt_image_open_write(&target, path, err);
+    ok = opened;
+    if (ok && ui.bios)
+        ok = dt_bios_enable_writes(&target, plan.sector, 1, journal, err);
+    if (ok) {
+        plan.disk = &target;
+        ok = restore ? dt_ebr_link_restore(&target, journal, torn, err)
+                     : dt_ebr_link_apply(&plan, journal, err);
+    }
+    if (opened) {
+        if (ui.bios)
+            dt_bios_close(&target);
+        else
+            dt_image_close(&target);
+    }
+    open_disk(path, ui.bios, ui.drive);
     strcpy(ui.status,
-           ok ? (restore ? "MBR restored and verified. Journal retained."
-                         : "MBR reconstructed and verified. Journal retained.")
+           ok ? (restore ? "EBR link restored and verified. Journal retained."
+                         : "EBR link inserted and verified. Journal retained.")
               : err);
+done:
+    dt_ebr_link_clear(&plan);
+}
+
+static int review_container(const DtContainerPlan *plan, int restore)
+{
+    unsigned top = 0, i;
+    char line[100];
+    int k;
+
+    for (;;) {
+        draw();
+        box(5, 3, 70, 19, restore ? " REVIEW CONTAINER UNDO " : " REVIEW EXTENDED CONTAINER ");
+        sprintf(line,
+                "MBR slot %u; type %02X; %u recovered volumes",
+                plan->slot,
+                plan->type,
+                plan->witness_count);
+        text(8, 5, BRIGHT, line);
+        sprintf(line,
+                "Container %lu + %lu sectors; CHS %u/%u",
+                (unsigned long)plan->base,
+                (unsigned long)plan->span,
+                plan->heads,
+                plan->sectors);
+        text(8, 6, CYAN, line);
+        text(8, 7, CYAN, "EBR disk LBA   Volume disk LBA       Sectors    Type");
+        for (i = 0; i < 9 && top + i < plan->witness_count; i++) {
+            const DtLinkWitness *witness = &plan->witness[top + i];
+
+            sprintf(line,
+                    "%12lu     %12lu  %12lu      %02X",
+                    (unsigned long)witness->record_sector,
+                    (unsigned long)witness->volume_start,
+                    (unsigned long)dt_dword(witness->record + 458),
+                    witness->record[450]);
+            text(8, 8 + i, WORK, line);
+        }
+        sprintf(line,
+                "Records %u-%u of %u; PgUp/PgDn or arrows scroll",
+                top + 1,
+                top + 9 < plan->witness_count ? top + 9 : plan->witness_count,
+                plan->witness_count);
+        text(8, 18, CYAN, line);
+        text(8, 19, BRIGHT, "Only the MBR entry/signature changes. Inspect files first.");
+        text(8, 20, FOCUS, " Enter: accept review   Esc: cancel   Home/End: first/last ");
+        flush();
+        k = key();
+        if (k == 13 || k == 27)
+            return k == 13;
+        if (k == NAV_HOME)
+            top = 0;
+        else if (k == NAV_END)
+            top = plan->witness_count > 9 ? plan->witness_count - 9 : 0;
+        else if ((k == NAV_DOWN || k == NAV_PGDN) && top + 9 < plan->witness_count) {
+            top += k == NAV_PGDN ? 9 : 1;
+            if (top + 9 > plan->witness_count)
+                top = plan->witness_count - 9;
+        } else if (k == NAV_UP || k == NAV_PGUP) {
+            unsigned step = k == NAV_PGUP ? 9 : 1;
+
+            top = top > step ? top - step : 0;
+        }
+    }
+}
+
+static void container_transaction(int restore, int torn)
+{
+    DtContainerPlan plan;
+    DtDisk target;
+    dt_u32 slot, base, span, type, heads, sectors;
+    char type_text[16];
+    char journal[128], confirm[32], path[128], err[160];
+    int ok, opened;
+
+    memset(&plan, 0, sizeof(plan));
+    if (restore) {
+        if (torn) {
+            const char *lines[] = {"Undo a container after an interrupted write.",
+                                   "Only saved before/after byte mixtures are accepted.",
+                                   "Every recovered record and boot sector is revalidated."};
+
+            if (!modal(" INTERRUPTED CONTAINER UNDO ", lines, 3))
+                return;
+        }
+        if (!prompt(" CONTAINER JOURNAL TO RESTORE ", journal, sizeof(journal)))
+            return;
+        ok = dt_container_review_journal(&ui.disk, journal, &plan, err);
+    } else {
+        if (!mbr_number(" CONTAINER: MBR SLOT (1-4) ", &slot) ||
+            !mbr_number(" CONTAINER: FIRST EBR DISK LBA ", &base) ||
+            !mbr_number(" CONTAINER: TOTAL SECTORS ", &span) ||
+            !prompt(" CONTAINER TYPE: 05, 0F OR 85 ", type_text, sizeof(type_text)))
+            return;
+        if (!dt_parse_u32(type_text, 16, &type) || (type != 5 && type != 15 && type != 0x85)) {
+            strcpy(ui.status, "Enter extended partition type 05, 0F or 85.");
+            return;
+        }
+        if (!mbr_number(" CONTAINER: BIOS GEOMETRY HEADS ", &heads) ||
+            !mbr_number(" CONTAINER: BIOS SECTORS PER TRACK ", &sectors))
+            return;
+        ok = dt_container_plan(&ui.disk, slot, base, span, type, heads, sectors, &plan, err);
+    }
+    if (!ok) {
+        strcpy(ui.status, err);
+        goto done;
+    }
+    if (!review_container(&plan, restore))
+        goto done;
+    if (!restore && !prompt(" NEW CONTAINER JOURNAL PATH ", journal, sizeof(journal)))
+        goto done;
+    if (!prompt(restore ? " TYPE RESTORE TO UNDO CONTAINER " : " TYPE CONTAINER TO RECONSTRUCT ",
+                confirm,
+                sizeof(confirm)) ||
+        strcmp(confirm, restore ? "RESTORE" : "CONTAINER"))
+        goto done;
+    if (!confirm_bios_write())
+        goto done;
+    strcpy(path, ui.source);
+    release_disk_handle();
+    ui.opened = ui.mounted = 0;
+    opened =
+        ui.bios ? dt_bios_open(&target, ui.drive, err) : dt_image_open_write(&target, path, err);
+    ok = opened;
+    if (ok && ui.bios)
+        ok = dt_bios_enable_mbr_write(&target, journal, err);
+    if (ok) {
+        plan.disk = &target;
+        ok = restore ? dt_container_restore(&target, journal, torn, err)
+                     : dt_container_apply(&plan, journal, err);
+    }
+    if (opened) {
+        if (ui.bios)
+            dt_bios_close(&target);
+        else
+            dt_image_close(&target);
+    }
+    open_disk(path, ui.bios, ui.drive);
+    strcpy(ui.status,
+           ok ? (restore ? "Container restored and verified. Journal retained."
+                         : "Container inserted and verified. Journal retained.")
+              : err);
+done:
+    dt_container_clear(&plan);
+}
+
+static int review_record(const DtEbrRecordPlan *plan, int restore)
+{
+    unsigned top = 0, i, count = plan->witness_count + 1;
+    const DtMbrPlan *logical = &plan->logical.entry;
+    char line[100];
+    int k;
+
+    for (;;) {
+        draw();
+        box(5, 3, 70, 19, restore ? " REVIEW WHOLE EBR UNDO " : " REVIEW WHOLE EBR RECORD ");
+        sprintf(line,
+                "EBR %lu -> volume %lu; next EBR %lu",
+                (unsigned long)plan->logical.sector,
+                (unsigned long)logical->start,
+                (unsigned long)plan->next);
+        text(8, 5, BRIGHT, line);
+        sprintf(line,
+                "FAT%u; %lu sectors; boot +%u; CHS %u/%u",
+                logical->bits,
+                (unsigned long)logical->total,
+                logical->boot_source,
+                logical->heads,
+                logical->sectors);
+        text(8, 6, CYAN, line);
+        text(8, 7, CYAN, "EBR disk LBA   Volume disk LBA       Sectors    Type");
+        for (i = 0; i < 9 && top + i < count; i++) {
+            unsigned index = top + i;
+            dt_u32 record, start, total;
+            unsigned type;
+
+            if (!index) {
+                record = plan->logical.sector;
+                start = logical->start;
+                total = logical->total;
+                type = plan->after[450];
+            } else {
+                const DtLinkWitness *witness = &plan->witness[index - 1];
+
+                record = witness->record_sector;
+                start = witness->volume_start;
+                total = dt_dword(witness->record + 458);
+                type = witness->record[450];
+            }
+            sprintf(line,
+                    "%12lu     %12lu  %12lu      %02X",
+                    (unsigned long)record,
+                    (unsigned long)start,
+                    (unsigned long)total,
+                    type);
+            text(8, 8 + i, WORK, line);
+        }
+        sprintf(line,
+                "Records %u-%u of %u; PgUp/PgDn or arrows scroll",
+                top + 1,
+                top + 9 < count ? top + 9 : count,
+                count);
+        text(8, 18, CYAN, line);
+        text(8, 19, BRIGHT, "Only this EBR table/signature changes. Inspect files first.");
+        text(8, 20, FOCUS, " Enter: accept review   Esc: cancel   Home/End: first/last ");
+        flush();
+        k = key();
+        if (k == 13 || k == 27)
+            return k == 13;
+        if (k == NAV_HOME)
+            top = 0;
+        else if (k == NAV_END)
+            top = count > 9 ? count - 9 : 0;
+        else if ((k == NAV_DOWN || k == NAV_PGDN) && top + 9 < count) {
+            top += k == NAV_PGDN ? 9 : 1;
+            if (top + 9 > count)
+                top = count - 9;
+        } else if (k == NAV_UP || k == NAV_PGUP) {
+            unsigned step = k == NAV_PGUP ? 9 : 1;
+
+            top = top > step ? top - step : 0;
+        }
+    }
+}
+
+static void record_transaction(int restore, int torn)
+{
+    DtEbrRecordPlan plan;
+    DtDisk target;
+    dt_u32 sector, start, next, source, heads, sectors;
+    char journal[128], confirm[32], path[128], err[160];
+    int ok, opened;
+
+    memset(&plan, 0, sizeof(plan));
+    if (restore) {
+        if (torn) {
+            const char *lines[] = {"Undo a whole EBR after an interrupted write.",
+                                   "Only saved before/after byte mixtures are accepted.",
+                                   "Every recovered record and boot sector is revalidated."};
+
+            if (!modal(" INTERRUPTED WHOLE EBR UNDO ", lines, 3))
+                return;
+        }
+        if (!prompt(" WHOLE EBR JOURNAL TO RESTORE ", journal, sizeof(journal)))
+            return;
+        ok = dt_ebr_record_review_journal(&ui.disk, journal, &plan, err);
+    } else {
+        if (!mbr_number(" RECORD: EBR DISK LBA ", &sector) ||
+            !mbr_number(" RECORD: VOLUME DISK LBA ", &start) ||
+            !mbr_number(" RECORD: NEXT EBR LBA (0 ENDS CHAIN) ", &next) ||
+            !mbr_number(" RECORD: BOOT SOURCE (0 PRIMARY, 6 BACKUP) ", &source) ||
+            !mbr_number(" RECORD: BIOS GEOMETRY HEADS ", &heads) ||
+            !mbr_number(" RECORD: BIOS SECTORS PER TRACK ", &sectors))
+            return;
+        ok = dt_ebr_record_plan(&ui.disk, sector, start, source, next, heads, sectors, &plan, err);
+    }
+    if (!ok) {
+        strcpy(ui.status, err);
+        goto done;
+    }
+    if (!review_record(&plan, restore))
+        goto done;
+    if (!restore && !prompt(" NEW WHOLE EBR JOURNAL PATH ", journal, sizeof(journal)))
+        goto done;
+    if (!prompt(restore ? " TYPE RESTORE TO UNDO WHOLE EBR " : " TYPE RECORD TO REBUILD WHOLE EBR ",
+                confirm,
+                sizeof(confirm)) ||
+        strcmp(confirm, restore ? "RESTORE" : "RECORD"))
+        goto done;
+    if (!confirm_bios_write())
+        goto done;
+    strcpy(path, ui.source);
+    release_disk_handle();
+    ui.opened = ui.mounted = 0;
+    opened =
+        ui.bios ? dt_bios_open(&target, ui.drive, err) : dt_image_open_write(&target, path, err);
+    ok = opened;
+    if (ok && ui.bios)
+        ok = dt_bios_enable_writes(&target, plan.logical.sector, 1, journal, err);
+    if (ok) {
+        plan.logical.entry.disk = &target;
+        ok = restore ? dt_ebr_record_restore(&target, journal, torn, err)
+                     : dt_ebr_record_apply(&plan, journal, err);
+    }
+    if (opened) {
+        if (ui.bios)
+            dt_bios_close(&target);
+        else
+            dt_image_close(&target);
+    }
+    open_disk(path, ui.bios, ui.drive);
+    strcpy(ui.status,
+           ok ? (restore ? "EBR record restored and verified. Journal retained."
+                         : "EBR record reconstructed and verified. Journal retained.")
+              : err);
+done:
+    dt_ebr_record_clear(&plan);
 }
 
 /* Menu actions are shared with shortcuts; unavailable actions remain disabled. */
@@ -2685,6 +3167,18 @@ enum {
     RECONSTRUCT_MBR,
     UNDO_MBR,
     UNDO_MBR_TORN,
+    RECONSTRUCT_EBR,
+    UNDO_EBR,
+    UNDO_EBR_TORN,
+    REBUILD_RECORD,
+    UNDO_RECORD,
+    UNDO_RECORD_TORN,
+    REBUILD_CONTAINER,
+    UNDO_CONTAINER,
+    UNDO_CONTAINER_TORN,
+    RECONNECT_EBR,
+    UNDO_LINK,
+    UNDO_LINK_TORN,
     QUIT,
     CHECK,
     SURFACE,
@@ -2742,6 +3236,18 @@ static const MenuItem disk_menu[] = {
     {"Reconstruct MBR...", RECONSTRUCT_MBR},
     {"Undo MBR reconstruction...", UNDO_MBR},
     {"Undo interrupted MBR...", UNDO_MBR_TORN},
+    {"Reconstruct EBR...", RECONSTRUCT_EBR},
+    {"Undo EBR reconstruction...", UNDO_EBR},
+    {"Undo interrupted EBR...", UNDO_EBR_TORN},
+    {"Reconnect EBR chain...", RECONNECT_EBR},
+    {"Undo EBR link...", UNDO_LINK},
+    {"Undo interrupted link...", UNDO_LINK_TORN},
+    {"Rebuild extended container...", REBUILD_CONTAINER},
+    {"Undo extended container...", UNDO_CONTAINER},
+    {"Undo interrupted container...", UNDO_CONTAINER_TORN},
+    {"Rebuild whole EBR...", REBUILD_RECORD},
+    {"Undo whole EBR...", UNDO_RECORD},
+    {"Undo interrupted record...", UNDO_RECORD_TORN},
     {"OEM code page...", OEM_CODEPAGE},
     {"Exit             Esc", QUIT},
     {NULL, 0},
@@ -2804,7 +3310,11 @@ static const char *menu_labels[] = {"Disk", "Diagnose", "View", "Reports", "Help
 
 static int enabled(int action)
 {
-    if (action == RECONSTRUCT_MBR || action == UNDO_MBR || action == UNDO_MBR_TORN)
+    if (action == RECONSTRUCT_MBR || action == UNDO_MBR || action == UNDO_MBR_TORN ||
+        action == RECONSTRUCT_EBR || action == UNDO_EBR || action == UNDO_EBR_TORN ||
+        action == RECONNECT_EBR || action == UNDO_LINK || action == UNDO_LINK_TORN ||
+        action == REBUILD_CONTAINER || action == UNDO_CONTAINER || action == UNDO_CONTAINER_TORN ||
+        action == REBUILD_RECORD || action == UNDO_RECORD || action == UNDO_RECORD_TORN)
         return ui.opened && ui.bios != 2;
     if (action == SEARCH_VOLUMES)
         return ui.opened && ui.bios != 2;
@@ -2985,14 +3495,50 @@ static int action(int command)
                 open_disk(NULL, 2, letter - 'A' + 1);
         }
         break;
+    case REBUILD_RECORD:
+        record_transaction(0, 0);
+        break;
+    case UNDO_RECORD:
+        record_transaction(1, 0);
+        break;
+    case UNDO_RECORD_TORN:
+        record_transaction(1, 1);
+        break;
+    case REBUILD_CONTAINER:
+        container_transaction(0, 0);
+        break;
+    case UNDO_CONTAINER:
+        container_transaction(1, 0);
+        break;
+    case UNDO_CONTAINER_TORN:
+        container_transaction(1, 1);
+        break;
+    case RECONNECT_EBR:
+        link_transaction(0, 0);
+        break;
+    case UNDO_LINK:
+        link_transaction(1, 0);
+        break;
+    case UNDO_LINK_TORN:
+        link_transaction(1, 1);
+        break;
+    case RECONSTRUCT_EBR:
+        partition_transaction(0, 0, 1);
+        break;
+    case UNDO_EBR:
+        partition_transaction(1, 0, 1);
+        break;
+    case UNDO_EBR_TORN:
+        partition_transaction(1, 1, 1);
+        break;
     case RECONSTRUCT_MBR:
-        mbr_transaction(0, 0);
+        partition_transaction(0, 0, 0);
         break;
     case UNDO_MBR:
-        mbr_transaction(1, 0);
+        partition_transaction(1, 0, 0);
         break;
     case UNDO_MBR_TORN:
-        mbr_transaction(1, 1);
+        partition_transaction(1, 1, 0);
         break;
     case SEARCH_VOLUMES:
         search_volumes();

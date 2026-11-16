@@ -2039,3 +2039,130 @@ After reboot, DOS may mount the restored partition and prevent BIOS undo; use a
 boot environment where the source remains unmounted. Mounted DOS drive letters
 cannot be used for MBR reconstruction. The MBR write capability permits only
 sector zero and does not widen normal filesystem write ranges.
+
+
+### Reconstructing a missing logical-partition entry
+
+Disk > Reconstruct EBR restores an empty logical-volume entry in an extended
+partition record that is still reachable through the existing chain. Enter the
+EBR's absolute disk LBA, the candidate volume's absolute start LBA, boot source,
+and BIOS CHS geometry. Review both locations, select a new journal, and type EBR.
+The preview shows the BPB hidden-sector value and the EBR-relative volume start;
+neither is automatically rewritten.
+
+```text
+MAGICDSK DISK.IMG --rebuild-ebr 63 --volume-start 126 --chs 16 63
+MAGICDSK DISK.IMG --rebuild-ebr 63 --volume-start 126 --chs 16 63 --apply --journal E.MDJ
+MAGICDSK DISK.IMG --restore-ebr E.MDJ --apply
+```
+
+The EBR journal is separate from an MBR journal. It binds the selected EBR and
+candidate boot bytes to the original MBR. Undo validates the saved insertion
+against a reconstructed before-state; the TUI displays its EBR sector before
+confirmation. Interrupted undo additionally requires every current byte to match
+a saved before/after byte. BIOS write access is restricted to this one EBR sector
+and retains the unmounted-source and separate-journal-disk checks.
+
+Existing chain links, other entries, MBR, bootstrap bytes and filesystem data are
+preserved. A missing signature can be rebuilt only on the selected record when
+its table is entirely empty. Loops, ambiguous extra entries, unreachable targets,
+overlaps and out-of-container candidates are refused. This operation does not
+invent missing links or an extended container, or establish that stale candidate
+data is the intended logical volume. Inspect and export files before repair.
+
+
+### Reconnecting a surviving EBR chain
+
+Disk > Reconnect EBR chain previews one missing link from a reachable EBR to an
+intact but unreachable chain inside the same extended container. Supply the
+source and target EBR disk LBAs and BIOS geometry. The paged review lists every
+recovered record, volume start, partition size and type. Inspect the volumes
+before accepting the review, choose a new journal, and type LINK to apply.
+
+```text
+MAGICDSK DISK.IMG --link-ebr 63 3069 --chs 16 63
+MAGICDSK DISK.IMG --link-ebr 63 3069 --chs 16 63 --apply --journal LINK.MDJ
+MAGICDSK DISK.IMG --restore-link LINK.MDJ --apply
+```
+
+Only an entirely empty link entry can be replaced. Every newly reachable volume
+must have a readable primary FAT boot sector, matching reserved FAT entries and
+a compatible partition type. The planner refuses loops, overlaps, out-of-range
+records, ambiguous entries and GPT metadata. It preserves the original logical
+entry, MBR, other chain links and all filesystem sectors.
+
+The link journal stores exact copies of every recovered EBR and boot sector.
+Apply revalidates them before and after journal persistence; undo reconstructs
+the original missing-link state and validates it before writing. Later changes
+to the saved chain metadata block undo. Interrupted undo permits only saved
+before/after byte mixtures in the source EBR, with explicit review.
+
+A mounted volume anywhere on the physical disk prevents BIOS writes. Image-file
+repairs are available when direct BIOS access cannot meet the existing write
+guards. Missing containers have a separate reconstruction workflow below.
+Empty reachable EBR tables can be rebuilt with the whole-record workflow below.
+
+### Rebuilding a missing extended container
+
+Disk > Rebuild extended container restores an entirely empty MBR slot that
+previously described a surviving chain of FAT logical volumes. Supply the slot,
+first EBR disk LBA, total container sectors, partition type (hex 05, 0F or 85),
+and BIOS geometry. The container extent is explicit: surviving links cannot
+establish the original amount of unused space. The paged review lists every
+recovered EBR and volume before a typed CONTAINER confirmation.
+
+```
+MAGICDSK DISK.IMG --rebuild-container 1 63 30000 0F --chs 16 63
+MAGICDSK DISK.IMG --rebuild-container 1 63 30000 0F --chs 16 63 --apply --journal C.MDJ
+MAGICDSK DISK.IMG --restore-container C.MDJ --apply
+```
+
+Every logical entry must have corroborated FAT metadata and a matching FAT type.
+The preview refuses existing extended containers, occupied slots, overlaps,
+loops, ambiguous EBR entries, GPT evidence and unreadable metadata. It preserves
+MBR bootstrap code, other partition entries, all EBRs and filesystem sectors.
+Only the selected sixteen-byte MBR entry and the MBR signature may change.
+
+The MDCTR001 journal binds the entire reviewed MBR and every recovered EBR and
+volume boot sector. It is committed and read back before writing sector zero.
+Apply revalidates the full chain before and after journal persistence. Undo
+reconstructs the original missing-container state for validation; later metadata
+changes invalidate it. Interrupted undo accepts only saved before/after byte
+mixtures, with explicit --accept-torn or the corresponding Disk menu command.
+
+BIOS writes retain the separate-journal, unmounted-disk and ATA-flush requirements.
+After reboot, DOS can mount recovered logical volumes; undo is then refused.
+Type 05 is the legacy CHS extended type, 0F the LBA type; 85 is not normally
+mounted by DOS. MS-DOS 6.22 does not mount FAT32, though MagicDisk can access it
+through BIOS. Empty reachable EBR tables can be rebuilt with the whole-record workflow below.
+
+### Rebuilding an empty EBR table
+
+Disk > Rebuild whole EBR restores a reachable EBR whose four partition entries
+are entirely empty. Specify its disk LBA, the recovered volume start, the next EBR
+LBA (explicit zero means the end of the chain), and BIOS geometry. Unlike logical
+entry repair, this operation can reconstruct the missing onward link in the same
+sector transaction. Existing bytes outside the table/signature are preserved.
+The paged TUI review lists the selected volume and every recovered tail volume.
+Choose a new journal and type RECORD to apply. Disk > Undo whole EBR and
+Undo interrupted record review the journal before a typed RESTORE confirmation.
+
+```
+MAGICDSK DISK.IMG --rebuild-record 63 3069 --volume-start 126 --chs 16 63
+MAGICDSK DISK.IMG --rebuild-record 63 3069 --volume-start 126 --chs 16 63 --apply --journal R.MDJ
+MAGICDSK DISK.IMG --restore-record R.MDJ --apply
+```
+
+The selected volume and every newly linked volume must pass candidate validation.
+The existing MBR/container and incoming chain must establish that the selected
+record is reachable. Recovered chains must remain bounded, loop-free and free of
+partition/EBR overlaps. Occupied or ambiguous entries are refused. For a damaged
+FAT32 primary boot sector, --boot-source 6 can select its corroborated backup.
+
+The MDREC001 journal records the MBR, original EBR, logical-entry-only preview,
+final EBR, selected volume boot sector and every recovered tail EBR/boot pair.
+The intermediate preview is review evidence only; apply writes just the final
+selected sector after committing the journal and revalidating current metadata.
+Undo revalidates the saved before-state and accepts only the exact saved states,
+or before/after byte mixtures when --accept-torn is explicitly requested.
+Mounted-volume exclusion, separate-journal and ATA-flush guards remain in force.
