@@ -45,6 +45,8 @@ typedef struct {
     DtVolume volume;
     DtPartition partitions[128];
     unsigned count, selected, cell, drive, recovery_source;
+    unsigned candidate_boot[128];
+    int candidates;
     int opened, bios, mounted, scanned, retested, preview, busy;
     int surfaced, surface_complete;
     dt_u32 surface_tested, surface_failed, surface_first, surface_count;
@@ -323,7 +325,7 @@ static void draw_workspace(void)
     fill(0, 0, 80, ' ', TITLE);
     text(2, 0, TITLE, "\004 MagicDisk");
     text(24, 0, TITLE, "DISK DIAGNOSTICS & RECOVERY");
-    text(65, 0, TITLE, ui.disk.write ? "WRITE MODE 0.3" : "READ ONLY  0.3");
+    text(65, 0, TITLE, !ui.candidates && ui.disk.write ? "WRITE MODE 0.3" : "READ ONLY  0.3");
     fill(0, 1, 80, ' ', CHROME);
     text(2, 1, CHROME, "Disk    Diagnose    View    Reports    Help");
     text(62, 1, CHROME, "F10 Menu  F1 Help");
@@ -572,7 +574,7 @@ static int mount_recovery(DtDisk *disk, dt_u32 start, dt_u32 size, DtVolume *vol
 
 static void mount_selected(void)
 {
-    ui.recovery_source = 6;
+    ui.recovery_source = ui.candidates ? ui.candidate_boot[ui.selected] : 6;
     ui.scanned = ui.retested = 0;
     clear_findings();
     memset(&ui.map, 0, sizeof(ui.map));
@@ -598,6 +600,10 @@ static int release_disk_handle(void)
 
 static int reopen_target(const char *journal, char *err)
 {
+    if (journal && ui.candidates) {
+        strcpy(err, "Discovered volumes are read-only; no partition repair has been approved.");
+        return 0;
+    }
     if (ui.bios == 2)
         return dt_dos_open(&ui.disk, ui.drive, journal, err);
     if (ui.bios == 1) {
@@ -628,6 +634,7 @@ static void close_disk(void)
     ui.opened = ui.mounted = ui.scanned = ui.retested = 0;
     clear_findings();
     ui.count = ui.selected = 0;
+    ui.candidates = 0;
 }
 
 static int open_disk(const char *path, int bios, unsigned drive)
@@ -691,14 +698,16 @@ static void select_volume(void)
         if (selected >= top + 10)
             top = selected - 9;
         draw();
-        box(5, 5, 70, 15, " SELECT VOLUME ");
+        box(5, 5, 70, 15, ui.candidates ? " DISCOVERED VOLUMES (READ ONLY) " : " SELECT VOLUME ");
         text(8, 7, CYAN, " #  Type    Start LBA      Sectors      Filesystem");
         for (i = top; i < ui.count && i < top + 10; i++) {
             DtVolume v;
             char err[160], fs[24];
             DtPartition *p = &ui.partitions[i];
-            if (dt_mount(&ui.disk, p->start, p->size, &v, err))
-                sprintf(fs, "FAT%u", v.bits);
+            if (dt_mount(&ui.disk, p->start, p->size, &v, err) ||
+                (ui.candidates && ui.candidate_boot[i] &&
+                 dt_mount_backup(&ui.disk, p->start, p->size, ui.candidate_boot[i], &v, err)))
+                sprintf(fs, "FAT%u%s", v.bits, v.boot_source ? " backup" : "");
             else
                 strcpy(fs, "Unsupported / invalid");
             sprintf(s,
@@ -722,6 +731,128 @@ static void select_volume(void)
         if (k == 13) {
             ui.selected = selected;
             mount_selected();
+            return;
+        }
+    }
+}
+
+typedef struct {
+    DtPartition partitions[128];
+    unsigned boot[128], bits[128], count;
+} CandidateList;
+
+static int collect_candidate(void *ctx, const DtVolume *volume)
+{
+    CandidateList *list = (CandidateList *)ctx;
+    unsigned index = list->count;
+
+    if (index == 128)
+        return 0;
+    list->partitions[index].start = volume->start;
+    list->partitions[index].size = volume->total;
+    list->partitions[index].type = 0;
+    list->boot[index] = volume->boot_source;
+    list->bits[index] = volume->bits;
+    list->count++;
+    return 1;
+}
+
+static void search_volumes(void)
+{
+    static CandidateList list;
+    char input[32], err[160], line[100];
+    dt_u32 first, count;
+    unsigned selected = 0, top = 0, i;
+    int complete, k;
+
+    if (!prompt(" VOLUME SEARCH: FIRST DISK LBA ", input, sizeof(input)))
+        return;
+    if (!dt_parse_u32(input, 10, &first) || first >= ui.disk.sectors) {
+        strcpy(ui.status, "Search start is outside the disk.");
+        return;
+    }
+    if (!prompt(" VOLUME SEARCH: SECTOR COUNT (0 = TO END) ", input, sizeof(input)))
+        return;
+    if (!dt_parse_u32(input, 10, &count) || count > ui.disk.sectors - first) {
+        strcpy(ui.status, "Search range is outside the disk.");
+        return;
+    }
+    if (!count)
+        count = ui.disk.sectors - first;
+    memset(&list, 0, sizeof(list));
+    ui.busy = 1;
+    strcpy(ui.status, "Searching for FAT boot sectors and matching FAT headers. Esc cancels.");
+    complete =
+        dt_find_volumes(&ui.disk, first, count, collect_candidate, &list, progress, NULL, err);
+    ui.busy = 0;
+    if (!list.count) {
+        strcpy(ui.status, complete ? "Search complete; no supported FAT candidates found." : err);
+        return;
+    }
+    if (complete)
+        sprintf(ui.status,
+                "Volume search complete: %u candidates available for inspection.",
+                list.count);
+    else
+        strcpy(ui.status, err);
+    for (;;) {
+        if (selected < top)
+            top = selected;
+        if (selected >= top + 10)
+            top = selected - 9;
+        draw();
+        box(3, 4, 74, 19, " FOUND FAT VOLUMES - READ ONLY ");
+        sprintf(line,
+                "%s: %u candidates. Contents may overlap or be stale.",
+                complete ? "Search complete" : "Search incomplete",
+                list.count);
+        text(5, 6, complete ? CYAN : AMBER, line);
+        cell(73, 4, top ? '^' : 196, CYAN);
+        cell(73, 22, top + 10 < list.count ? 'v' : 196, CYAN);
+        text(5, 7, WORK, "Enter: inspect  Esc: back  Arrows/PgUp/PgDn/Home/End: select");
+        text(5, 8, CYAN, " #   FAT      Start LBA        Sectors       Boot source");
+        for (i = top; i < list.count && i < top + 10; i++) {
+            sprintf(line,
+                    "%3u   %2u   %12lu   %12lu   %u",
+                    i + 1,
+                    list.bits[i],
+                    (unsigned long)list.partitions[i].start,
+                    (unsigned long)list.partitions[i].size,
+                    list.boot[i]);
+            fill(5, 9 + i - top, 70, ' ', selected == i ? FOCUS : WORK);
+            text(5, 9 + i - top, selected == i ? FOCUS : WORK, line);
+        }
+        text(5, 20, WORK, "Inspect and export files before considering partition recovery.");
+        text(5, 21, WORK, "This search does not change the partition table or volume data.");
+        flush();
+        k = key();
+        if (k == 27) {
+            strcpy(ui.status, "Volume search dismissed; current selection unchanged.");
+            return;
+        }
+        if (k == NAV_UP && selected)
+            selected--;
+        if (k == NAV_DOWN && selected + 1 < list.count)
+            selected++;
+        if (k == NAV_PGUP)
+            selected = selected > 10 ? selected - 10 : 0;
+        if (k == NAV_PGDN)
+            selected = selected + 10 < list.count ? selected + 10 : list.count - 1;
+        if (k == NAV_HOME)
+            selected = 0;
+        if (k == NAV_END)
+            selected = list.count - 1;
+        if (k == 13) {
+            memcpy(ui.partitions, list.partitions, sizeof(ui.partitions));
+            memcpy(ui.candidate_boot, list.boot, sizeof(ui.candidate_boot));
+            ui.count = list.count;
+            ui.selected = selected;
+            ui.candidates = 1;
+            mount_selected();
+            if (ui.mounted)
+                strcpy(ui.status,
+                       "Discovered volume: read-only inspection and file export. F2 selects "
+                       "candidates.");
             return;
         }
     }
@@ -849,16 +980,21 @@ static void findings(void)
             4,
             76,
             18,
-            ui.surfaced       ? " SURFACE READ FINDINGS "
-            : ui.preview == 8 ? " DOS ALIAS REPAIR PREVIEW "
-            : ui.preview == 7 ? " LONG-NAME CLEANUP PREVIEW "
-            : ui.preview == 6 ? " FILE SALVAGE PREVIEW "
-            : ui.preview == 5 ? " TIMESTAMP PREVIEW "
-            : ui.preview == 4 ? " DIRECTORY-ENTRY PREVIEW "
-            : ui.preview == 3 ? " COMBINED-REPAIR PREVIEW "
-            : ui.preview == 2 ? " DIRECTORY-REPAIR PREVIEW "
-            : ui.preview      ? " FILE-REPAIR PREVIEW "
-                              : " INSPECTION FINDINGS ");
+            ui.surfaced        ? " SURFACE READ FINDINGS "
+            : ui.preview == 13 ? " LABEL TEXT REPAIR PREVIEW "
+            : ui.preview == 12 ? " EXTRA DOT CLEANUP PREVIEW "
+            : ui.preview == 11 ? " ATTRIBUTE REPAIR PREVIEW "
+            : ui.preview == 10 ? " NAME CONFLICT REPAIR PREVIEW "
+            : ui.preview == 9  ? " VOLUME LABEL REPAIR PREVIEW "
+            : ui.preview == 8  ? " DOS ALIAS REPAIR PREVIEW "
+            : ui.preview == 7  ? " LONG-NAME CLEANUP PREVIEW "
+            : ui.preview == 6  ? " FILE SALVAGE PREVIEW "
+            : ui.preview == 5  ? " TIMESTAMP PREVIEW "
+            : ui.preview == 4  ? " DIRECTORY-ENTRY PREVIEW "
+            : ui.preview == 3  ? " COMBINED-REPAIR PREVIEW "
+            : ui.preview == 2  ? " DIRECTORY-REPAIR PREVIEW "
+            : ui.preview       ? " FILE-REPAIR PREVIEW "
+                               : " INSPECTION FINDINGS ");
         sprintf(s, "Stored: %u  Omitted: %u  Arrows: browse  Esc: close", ui.log_count, ui.omitted);
         text(4, 5, CYAN, s);
         if (!ui.log_count && !ui.scanned && !ui.retested && !ui.preview && !ui.surfaced)
@@ -1380,6 +1516,10 @@ static void change_bad_marker(int mark_bad, dt_u32 selected)
     int ok, relocate = 0;
     dt_u32 allocation_value;
 
+    if (ui.candidates) {
+        strcpy(ui.status, "Discovered volumes are read-only; markers cannot be changed.");
+        return;
+    }
     disk_sector = selected;
     if (selected == 0xffffffffUL) {
         if (!prompt(ui.bios == 2 ? (mark_bad ? " MARK BAD: VOLUME SECTOR (LBA) "
@@ -1995,6 +2135,233 @@ static void repair_short_names(void)
     dt_plan_free(plan);
 }
 
+static void repair_labels(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[7];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for label repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_label_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 9 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No extra or misplaced labels; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Remove %lu volume-label records in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Keep the first root label; remove extra and subdirectory labels.";
+    lines[2] = "Labels with cluster pointers or file sizes are refused.";
+    lines[3] = "Boot label, names, contents and allocation stay intact.";
+    lines[4] = "Existing name conflicts need a separate name repair.";
+    lines[5] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[6] = "Type LABELS to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW VOLUME LABELS ", lines, 7) ||
+        !prompt(" TYPE LABELS TO REMOVE EXTRA LABEL RECORDS ", input, sizeof(input)) ||
+        strcmp(input, "LABELS") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Label repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void clear_extra_dots(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for label repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_extra_dot_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 12 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No extra dot entries; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Remove %lu redundant dot records in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Remove root dots and extra dots beyond the leading pair.";
+    lines[2] = "Require matching pointers, directory type and zero size.";
+    lines[3] = "Keep the valid leading pair, names, contents and allocation.";
+    lines[4] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[5] = "Type DOTS to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW EXTRA DOT ENTRIES ", lines, 6) ||
+        !prompt(" TYPE DOTS TO REMOVE EXTRA DOT ENTRIES ", input, sizeof(input)) ||
+        strcmp(input, "DOTS") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Dot cleanup cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void repair_label_text(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for label repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_label_text_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 13 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No invalid label text; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Normalize %lu volume labels in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Replace invalid bytes and a leading space with underscores.";
+    lines[2] = "Keep valid spaces/OEM bytes; selected OEM policy is journaled.";
+    lines[3] = "Synchronize extended boot labels and validated FAT32 backup.";
+    lines[4] = "Esc cancels; F6 lists byte changes; F7 exports the preview.";
+    lines[5] = "Type TEXT to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW VOLUME LABEL TEXT ", lines, 6) ||
+        !prompt(" TYPE TEXT TO REPAIR VOLUME LABEL TEXT ", input, sizeof(input)) ||
+        strcmp(input, "TEXT") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Label-text repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void repair_conflicts(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[6];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for name-conflict repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_conflict_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 10 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No conflicting or invalid names; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Rename %lu conflicting/invalid entries in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Keep first names; later conflicts receive R0000001.CHK names.";
+    lines[2] = "Conflicting long names are replaced; other LFN text stays.";
+    lines[3] = "File contents, dates, directory children and allocation stay.";
+    lines[4] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[5] = "Type NAMES to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW NAME CONFLICTS ", lines, 6) ||
+        !prompt(" TYPE NAMES TO RENAME CONFLICTING ENTRIES ", input, sizeof(input)) ||
+        strcmp(input, "NAMES") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Name repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+static void repair_attributes(void)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[7];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for attribute repair.");
+        return;
+    }
+    clear_findings();
+    ui.scanned = ui.retested = 0;
+    ui.busy = 1;
+    ok = dt_attribute_plan_ex(&ui.volume, plan, finding, NULL, progress, NULL, err);
+    ui.busy = 0;
+    ui.preview = ok ? 11 : 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status, ok ? "No reserved attribute bits; no writes made." : err);
+        dt_plan_free(plan);
+        return;
+    }
+    sprintf(summary,
+            "Clear reserved bits in %lu entries in %u sectors.",
+            (unsigned long)plan->cluster,
+            plan->count);
+    lines[0] = summary;
+    lines[1] = "Clear only reserved attribute bits 40h and 80h.";
+    lines[2] = "Keep defined flags, entry types, names and LFN text.";
+    lines[3] = "File contents, dates, directory children and allocation stay.";
+    lines[4] = "Other name, label or dot findings need separate repairs.";
+    lines[5] = "Esc cancels; F6 lists changes and F7 exports the preview.";
+    lines[6] = "Type FLAGS to approve. The journal preserves original bytes.";
+    if (!modal(" REVIEW RESERVED ATTRIBUTES ", lines, 7) ||
+        !prompt(" TYPE FLAGS TO CLEAR RESERVED ATTRIBUTE BITS ", input, sizeof(input)) ||
+        strcmp(input, "FLAGS") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Attribute repair cancelled; F6 shows proposed changes.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
 static void reclaim_lost(void)
 {
     DtPlan *plan;
@@ -2202,6 +2569,111 @@ static void restore_journal(int torn)
         strcpy(ui.status, ok ? "Original metadata restored and verified. Journal retained." : err);
 }
 
+static int mbr_number(const char *title, dt_u32 *value)
+{
+    char input[32];
+
+    if (!prompt(title, input, sizeof(input)))
+        return 0;
+    if (!dt_parse_u32(input, 10, value)) {
+        strcpy(ui.status, "Enter a decimal sector or geometry value.");
+        return 0;
+    }
+    return 1;
+}
+
+static void mbr_transaction(int restore, int torn)
+{
+    DtMbrPlan plan;
+    DtDisk target;
+    dt_u32 slot, start, source, heads, sectors;
+    char journal[128], confirm[32], path[128], err[160];
+    char extent[96], geometry[96], hidden[96];
+    const char *lines[6];
+    int ok, opened;
+
+    if (!restore) {
+        if (!mbr_number(" MBR: EMPTY SLOT (1..4) ", &slot) ||
+            !mbr_number(" MBR: CANDIDATE START LBA ", &start) ||
+            !mbr_number(" MBR: BOOT SOURCE (0 = PRIMARY) ", &source) ||
+            !mbr_number(" MBR: BIOS GEOMETRY HEADS ", &heads) ||
+            !mbr_number(" MBR: BIOS SECTORS PER TRACK ", &sectors))
+            return;
+        if (!dt_mbr_plan(&ui.disk, slot, start, source, heads, sectors, &plan, err)) {
+            strcpy(ui.status, err);
+            return;
+        }
+        sprintf(extent,
+                "Slot %u: FAT%u, LBA %lu, %lu sectors, inactive",
+                plan.slot,
+                plan.bits,
+                (unsigned long)plan.start,
+                (unsigned long)plan.total);
+        sprintf(geometry,
+                "CHS %u heads / %u sectors; boot source %u",
+                plan.heads,
+                plan.sectors,
+                plan.boot_source);
+        sprintf(hidden,
+                "BPB hidden sectors %lu%s",
+                (unsigned long)dt_dword(plan.volume_boot + 28),
+                dt_dword(plan.volume_boot + 28) == plan.start ? "" : " MISMATCH (unchanged)");
+        lines[0] = extent;
+        lines[1] = geometry;
+        lines[2] = hidden;
+        lines[3] = "Bootstrap and occupied entries are preserved.";
+        lines[4] = "Inspect candidate files before reconstructing the table.";
+        lines[5] = "This does not repair boot code or boot-sector geometry.";
+        if (!modal(" REVIEW MBR RECONSTRUCTION ", lines, 6))
+            return;
+    } else {
+        lines[0] = "Restore only a MagicDisk MBR reconstruction journal.";
+        lines[1] = "Candidate identity and original insertion are revalidated.";
+        lines[2] = torn ? "Allows only saved before/after byte mixtures."
+                        : "Current MBR must exactly match a saved before/after sector.";
+        lines[3] = "Later unrelated changes are refused. Journal is retained.";
+        if (!modal(torn ? " REVIEW INTERRUPTED MBR UNDO " : " REVIEW MBR UNDO ", lines, 4))
+            return;
+    }
+    if (!prompt(restore ? " MBR JOURNAL TO RESTORE " : " NEW MBR JOURNAL PATH ",
+                journal,
+                sizeof(journal)) ||
+        !prompt(restore ? " TYPE RESTORE TO UNDO MBR " : " TYPE MBR TO RECONSTRUCT TABLE ",
+                confirm,
+                sizeof(confirm)) ||
+        strcmp(confirm, restore ? "RESTORE" : "MBR"))
+        return;
+    if (!confirm_bios_write())
+        return;
+    strcpy(path, ui.source);
+    release_disk_handle();
+    ui.opened = ui.mounted = 0;
+    opened =
+        ui.bios ? dt_bios_open(&target, ui.drive, err) : dt_image_open_write(&target, path, err);
+    ok = opened;
+    if (ok && ui.bios)
+        ok = dt_bios_enable_mbr_write(&target, journal, err);
+    if (ok) {
+        if (restore)
+            ok = dt_mbr_restore(&target, journal, torn, err);
+        else {
+            plan.disk = &target;
+            ok = dt_mbr_apply(&plan, journal, err);
+        }
+    }
+    if (opened) {
+        if (ui.bios)
+            dt_bios_close(&target);
+        else
+            dt_image_close(&target);
+    }
+    open_disk(path, ui.bios, ui.drive);
+    strcpy(ui.status,
+           ok ? (restore ? "MBR restored and verified. Journal retained."
+                         : "MBR reconstructed and verified. Journal retained.")
+              : err);
+}
+
 /* Menu actions are shared with shortcuts; unavailable actions remain disabled. */
 enum {
     OPEN_IMAGE = 1,
@@ -2209,6 +2681,10 @@ enum {
     OPEN_DOS,
     OEM_CODEPAGE,
     VOLUMES,
+    SEARCH_VOLUMES,
+    RECONSTRUCT_MBR,
+    UNDO_MBR,
+    UNDO_MBR_TORN,
     QUIT,
     CHECK,
     SURFACE,
@@ -2239,6 +2715,11 @@ enum {
     REPAIR_ENTRIES,
     CLEAR_TIMESTAMPS,
     CLEAR_LFN,
+    REPAIR_LABEL_TEXT,
+    CLEAR_EXTRA_DOTS,
+    REPAIR_ATTRIBUTES,
+    REPAIR_CONFLICTS,
+    REPAIR_LABELS,
     REPAIR_ALIASES,
     REBUILD_FAT_HEADERS,
     SECTOR_VIEW,
@@ -2257,6 +2738,10 @@ static const MenuItem disk_menu[] = {
     {"BIOS device...", OPEN_BIOS},
     {"DOS volume...", OPEN_DOS},
     {"Select volume...   F2", VOLUMES},
+    {"Search lost volumes...", SEARCH_VOLUMES},
+    {"Reconstruct MBR...", RECONSTRUCT_MBR},
+    {"Undo MBR reconstruction...", UNDO_MBR},
+    {"Undo interrupted MBR...", UNDO_MBR_TORN},
     {"OEM code page...", OEM_CODEPAGE},
     {"Exit             Esc", QUIT},
     {NULL, 0},
@@ -2280,6 +2765,11 @@ static const MenuItem diagnose_menu[] = {
     {"Rebuild FAT copies...", REBUILD_FAT},
     {"Rebuild backup boot...", REBUILD_BOOT_BACKUP},
     {"Rebuild FAT32 FSInfo...", REBUILD_FSINFO},
+    {"Remove extra dot entries...", CLEAR_EXTRA_DOTS},
+    {"Repair reserved attributes...", REPAIR_ATTRIBUTES},
+    {"Repair name conflicts...", REPAIR_CONFLICTS},
+    {"Repair volume label text...", REPAIR_LABEL_TEXT},
+    {"Repair volume labels...", REPAIR_LABELS},
     {"Repair invalid DOS names...", REPAIR_ALIASES},
     {"Clear invalid long names...", CLEAR_LFN},
     {"Clear invalid timestamps...", CLEAR_TIMESTAMPS},
@@ -2314,6 +2804,20 @@ static const char *menu_labels[] = {"Disk", "Diagnose", "View", "Reports", "Help
 
 static int enabled(int action)
 {
+    if (action == RECONSTRUCT_MBR || action == UNDO_MBR || action == UNDO_MBR_TORN)
+        return ui.opened && ui.bios != 2;
+    if (action == SEARCH_VOLUMES)
+        return ui.opened && ui.bios != 2;
+    if (ui.candidates &&
+        (action == MARK_BAD || action == UNMARK_BAD || action == RESTORE_JOURNAL ||
+         action == RESTORE_TORN || action == RECOVER_PRIMARY_BOOT || action == REBUILD_FSINFO ||
+         action == REBUILD_BOOT_BACKUP || action == REBUILD_FAT || action == RECLAIM_LOST ||
+         action == REPAIR_FILES || action == REPAIR_DIRECTORIES || action == REPAIR_TREE ||
+         action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS ||
+         action == CLEAR_LFN || action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS ||
+         action == REPAIR_ATTRIBUTES || action == REPAIR_CONFLICTS || action == REPAIR_LABELS ||
+         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
+        return 0;
     if (action == SURFACE_BLOCK)
         return ui.mounted && ui.map.cells;
     if (action == OWNER_VIEW)
@@ -2327,7 +2831,9 @@ static int enabled(int action)
          action == REBUILD_BOOT_BACKUP || action == REBUILD_FAT || action == RECLAIM_LOST ||
          action == REPAIR_FILES || action == REPAIR_DIRECTORIES || action == REPAIR_TREE ||
          action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS ||
-         action == CLEAR_LFN || action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
+         action == CLEAR_LFN || action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS ||
+         action == REPAIR_ATTRIBUTES || action == REPAIR_CONFLICTS || action == REPAIR_LABELS ||
+         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
         return 0;
     if (action == VOLUMES)
         return ui.opened && ui.count;
@@ -2335,7 +2841,9 @@ static int enabled(int action)
         action == EXPORT_FILES || action == RECOVER_LOST || action == RECLAIM_LOST ||
         action == REPAIR_FILES || action == REPAIR_DIRECTORIES || action == REPAIR_TREE ||
         action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS || action == CLEAR_LFN ||
-        action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS)
+        action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS || action == REPAIR_ATTRIBUTES ||
+        action == REPAIR_CONFLICTS || action == REPAIR_LABELS || action == REPAIR_ALIASES ||
+        action == REBUILD_FAT_HEADERS)
         return ui.mounted;
     if (action == REBUILD_FAT || action == REPAIR_TREE_SOURCE)
         return ui.mounted && ui.volume.mirrored && ui.volume.copies > 1;
@@ -2477,6 +2985,18 @@ static int action(int command)
                 open_disk(NULL, 2, letter - 'A' + 1);
         }
         break;
+    case RECONSTRUCT_MBR:
+        mbr_transaction(0, 0);
+        break;
+    case UNDO_MBR:
+        mbr_transaction(1, 0);
+        break;
+    case UNDO_MBR_TORN:
+        mbr_transaction(1, 1);
+        break;
+    case SEARCH_VOLUMES:
+        search_volumes();
+        break;
     case VOLUMES:
         select_volume();
         break;
@@ -2582,6 +3102,21 @@ static int action(int command)
     case REBUILD_FAT_HEADERS:
         rebuild_fat_headers();
         break;
+    case REPAIR_LABEL_TEXT:
+        repair_label_text();
+        break;
+    case CLEAR_EXTRA_DOTS:
+        clear_extra_dots();
+        break;
+    case REPAIR_ATTRIBUTES:
+        repair_attributes();
+        break;
+    case REPAIR_CONFLICTS:
+        repair_conflicts();
+        break;
+    case REPAIR_LABELS:
+        repair_labels();
+        break;
     case REPAIR_ALIASES:
         repair_short_names();
         break;
@@ -2657,6 +3192,12 @@ static int finding_repair(const char *code, int run)
         {"DIR_DOT_ORDER", REPAIR_ENTRIES},
         {"DIR_SIZE", REPAIR_ENTRIES},
         {"DIR_TIMESTAMP", CLEAR_TIMESTAMPS},
+        {"DIR_DOT_ROOT", CLEAR_EXTRA_DOTS},
+        {"DIR_DOT_POSITION", CLEAR_EXTRA_DOTS},
+        {"DIR_ATTRIBUTE", REPAIR_ATTRIBUTES},
+        {"DIR_DUPLICATE", REPAIR_CONFLICTS},
+        {"DIR_LABEL_NAME", REPAIR_LABEL_TEXT},
+        {"DIR_LABEL", REPAIR_LABELS},
         {"DIR_NAME", REPAIR_ALIASES},
         {"LFN_ORDER", CLEAR_LFN},
         {"LFN_ORPHAN", CLEAR_LFN},

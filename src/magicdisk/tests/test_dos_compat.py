@@ -718,6 +718,19 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
         with repair_volume.open('rb') as source:
             shutil.copyfileobj(source, file)
         file.truncate(cylinders * 1008 * 512)
+    # These scenarios read file data between repair and exact undo. Pin the
+    # guest date to the file's existing access date so Windows 98 does not
+    # legitimately update the journaled directory sector during that read.
+    rtc = []
+    if args.growth or args.relocate_native:
+        if args.growth:
+            stamp = struct.unpack_from('<H', tree_broken, data_entry + 18)[0]
+        else:
+            accessed = data_entry if args.relocate_directory else native_entry
+            stamp = struct.unpack_from('<H', native_original, accessed + 18)[0]
+        year, month, day = 1980 + (stamp >> 9), (stamp >> 5) & 15, stamp & 31
+        assert month and day
+        rtc = ['-rtc', f'base={year:04d}-{month:02d}-{day:02d}T12:00:00']
     with subprocess.Popen([
         'qemu-system-i386', '-accel', 'tcg', '-m', '64', '-display', 'none',
         '-serial', 'none', '-monitor', 'stdio', '-no-reboot', '-boot', 'a',
@@ -726,7 +739,7 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-' + args.kernel + '-') as dir
         '-drive', f'file={disk},format=raw,if=none,id=systemdisk',
         '-device', f'ide-hd,drive=systemdisk,cyls={cylinders},heads=16,secs=63,bios-chs-trans=none',
         '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
-    ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+    ] + rtc, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
         try:
             process.wait(timeout=120)
         except subprocess.TimeoutExpired:

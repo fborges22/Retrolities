@@ -22,7 +22,8 @@ args = parser.parse_args()
 source_hash = digest(args.boot)
 host = args.executable.resolve().parents[2] / 'host' / 'magicdisk'
 cases = [(12, 'file'), (16, 'file'), (32, 'file'), (12, 'chain'), (12, 'directory'),
-         (12, 'timestamp'), (12, 'header'), (12, 'mirror'), (12, 'unsupported'),
+         (12, 'timestamp'), (12, 'header'), (12, 'mirror'), (12, 'conflict'),
+         (12, 'unsupported'),
          (32, 'fsinfo'), (32, 'boot')]
 if args.commit_files:
     cases = [case for case in cases if case[1] == 'file']
@@ -33,7 +34,8 @@ info = {
     'timestamp': ('DIR_TIMESTAMP', 'REVIEW INVALID TIMESTAMPS', 'Timestamp repair cancelled;'),
     'header': ('FAT_HEADER', 'REVIEW FAT HEADERS', 'FAT header repair cancelled;'),
     'mirror': ('FAT_MIRROR', 'REVIEW FILESYSTEM TREE REPAIR', 'Combined repair cancelled;'),
-    'unsupported': ('DIR_DUPLICATE', '', ''),
+    'conflict': ('DIR_DUPLICATE', 'REVIEW NAME CONFLICTS', 'Name repair cancelled;'),
+    'unsupported': ('FAT_RANGE', '', ''),
     'fsinfo': ('FSINFO_SIGNATURE', 'REVIEW FSINFO REPAIR', 'Metadata repair cancelled;'),
     'boot': ('BOOT_BACKUP', 'REVIEW BACKUP BOOT REPAIR', 'Metadata repair cancelled;'),
 }
@@ -65,8 +67,11 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-finding-repairs-') as directo
                 data[start:start + 3] = bytes(3)
         elif kind == 'mirror':
             data[(layout.reserved + layout.fatsz) * 512 + 1500] ^= 1
-        elif kind == 'unsupported':
+        elif kind == 'conflict':
             data = duplicate_alias(data, bits)
+        elif kind == 'unsupported':
+            assert layout.fat(1000) == 0
+            set_fat(data, bits, 1000, 1)
         elif kind == 'fsinfo':
             data[512:1024] = bytes(512)
         elif kind == 'boot':

@@ -1314,6 +1314,137 @@ F6/F7 show/export the proposed field offsets and original values. The QEMU
 exact undo under MS-DOS 6.22, FreeDOS and Windows 98 DOS; native tests cover
 FAT12/16/32 directories, dot entries, failure rollback and ownership guards.
 
+## Reserved attribute repair
+
+`MAGICDSK IMAGE.IMG --clear-extra-dots` previews removing redundant `.` and
+`..` records from the root or from positions beyond a subdirectory's leading
+pair. In the TUI, choose **Diagnose > Remove extra dot entries** and type `DOTS`,
+or press `P` on a `DIR_DOT_ROOT` or `DIR_DOT_POSITION` finding. Apply a reviewed
+CLI plan with `--apply --journal NEW.MDJ` on a separate disk.
+
+Cleanup requires a valid leading pair in each subdirectory, readable and
+unambiguous ownership, directory attributes, zero size, and matching self/parent
+pointers. Ambiguous records or unrelated structural damage are refused. Only the
+redundant records' first bytes become `E5h`; names, long-name records, timestamps,
+file contents and allocation remain unchanged. A complete scan validates the
+proposed image. Version-22 journals retain original sectors for exact undo,
+including recovery from a partially applied cleanup.
+
+`MAGICDSK IMAGE.IMG --repair-attributes` previews clearing reserved attribute
+bits `40h` and `80h` in live directory records. Choose **Diagnose > Repair
+reserved attributes** and type `FLAGS`, or use `--apply --journal NEW.MDJ`
+after reviewing the CLI preview. `DIR_ATTRIBUTE` findings offer **P** for the
+same volume-wide review. F6/F7 inspect or export original and proposed byte values.
+
+Only the reserved bits change. Defined read-only, hidden, system, archive,
+directory and volume-label bits remain unchanged, as do names, timestamps,
+contents and allocation. VFAT records with otherwise valid metadata regain their
+original LFN text without deleting any slots. This does not guess whether an
+ambiguous entry should be a file, directory or label. Unrelated LFN corruption
+or ambiguous ownership causes refusal. The proposed filesystem is validated
+before approval. Version-21 journals preserve original sectors for exact undo,
+including partially applied repairs.
+
+Volume labels containing control bytes, prohibited DOS punctuation, or a leading
+space are reported as `DIR_LABEL_NAME`, with the byte value and exact sector
+offset. Interior spaces, printable/OEM bytes and the first-byte `05h` escape for
+an OEM `E5h` character are preserved. With unknown OEM encoding, punctuation
+following high bytes remains undecided to avoid damaging possible DBCS text;
+choose a supported single-byte code page for definitive punctuation checks.
+
+`--repair-label-text` or **Diagnose > Repair volume label text** previews replacing
+invalid bytes with underscores. Press `P` on `DIR_LABEL_NAME` to open the same
+review; type `TEXT` to approve in the TUI. A new journal on a separate disk is
+required for application. The preview includes original/replacement raw bytes.
+Root-label changes also synchronize the extended boot label when signature
+`29h` is present. A configured FAT32 backup must exactly match the original
+primary before synchronization; repair a damaged backup first. No boot code,
+serial number, allocation, file data or valid label characters are changed.
+
+Version-23 journals retain the selected OEM policy and original directory/boot
+sectors. Undo validates the permitted boot-label field and recomputes the repair,
+including partially applied transactions. Label placement and ownership must be
+unambiguous; repair duplicate/misplaced labels before changing label text.
+The punctuation rules follow the [dosfstools label validator](https://github.com/dosfstools/dosfstools/blob/master/src/mkfs.fat.c)
+and the [Microsoft MS-DOS Label reference](https://bitsavers.trailing-edge.com/pdf/microsoft/msdos_3.20/410630013-320-O02-1285_MSDOS_3.20_User_Reference_1986.pdf#page=117).
+
+When all three defects occur together, use this order: reserved attributes,
+volume labels, then name conflicts. Label cleanup preserves existing filename
+collisions and reports `FOLLOWUP_CONFLICTS`; it validates the same conflict count
+after removing only redundant label records. Undo the three journals in reverse
+order to restore each intermediate state and the original image.
+
+Duplicate names and misplaced or duplicate labels can coexist with reserved
+attribute bits. Attribute cleanup preserves those findings and reports
+`FOLLOWUP_CONFLICTS` or `FOLLOWUP_LABELS`; run the corresponding name-conflict or
+volume-label repair next. Each repair has a separate preview and journal. Undo
+the follow-up journal before the attribute journal. Labels with cluster pointers,
+nonzero sizes or directory type bits remain refused, including labels whose
+reserved bits were already clear.
+
+Redundant dot records may also carry reserved attribute bits. Attribute cleanup
+preserves their names and positions, reports `FOLLOWUP_DOTS`, and verifies that
+the same root/extra-dot findings remain. Run **Remove extra dot entries** next.
+Incorrect pointers, nonzero sizes, missing leading dot pairs and unrelated
+structural damage still prevent attribute cleanup. Undo the dot-cleanup journal
+before undoing the attribute journal.
+
+An invalid DOS alias may coexist with reserved attribute bits. Attribute repair
+leaves that alias unchanged, verifies that the invalid-alias count has not changed,
+and reports `FOLLOWUP_NAMES` so alias repair can follow. This avoids making each
+repair depend on the other. The TUI review also warns that invalid aliases need a
+separate repair. Undo the alias journal first, then the attribute journal, to
+restore the original combined damage. Other ownership and LFN guards still apply.
+
+## Duplicate filename repair
+
+`MAGICDSK IMAGE.IMG --repair-name-conflicts` previews name-conflict resolution.
+Use **Diagnose > Repair name conflicts**, or press **P** on a `DIR_DUPLICATE`
+finding, to review the same plan. Type `NAMES` to approve and select a new journal
+on a separate disk. The CLI requires `--apply --journal NEW.MDJ` to write.
+
+The first name in directory traversal order is retained. Later conflicting
+entries receive unique `R0000001.CHK`-style DOS names. A nonconflicting LFN keeps
+its text and receives the new alias checksum. A conflicting LFN is replaced
+with the recovery name in its existing final slot; preceding slots are marked
+deleted. This does not reconstruct an intended original name. Preview reports
+show the original long name and replacement as readable UTF-8, and retain
+the old alias bytes and original LFN slots for verification.
+File contents, sizes, timestamps, attributes, directory children and allocation
+remain unchanged. Invalid DOS aliases can be corrected in the same operation.
+Malformed LFNs and ambiguous ownership must be resolved first.
+
+Replacement names are checked against the entire proposed directory, including
+later entries and their LFNs. Comparisons use the selected OEM policy and the
+same Unicode case rules as diagnosis. The version-20 journal retains that
+policy and original sectors for validated undo, including partial writes and
+later sessions with a different default policy. Cancelled preparation does not
+write. The final proposed volume must pass validation before approval.
+
+## Volume-label repair
+
+`MAGICDSK IMAGE.IMG --repair-labels` previews removal of extra root labels
+and labels placed in subdirectories. The first root label is retained. Add
+`--apply --journal NEW.MDJ` to apply the reviewed changes. In the TUI choose
+**Diagnose > Repair volume labels** and type `LABELS`; a `DIR_LABEL` finding
+also offers **P** to open this review. F6/F7 inspect or export the retained and
+removed records, including raw label bytes and sector locations.
+
+A label with a cluster pointer or file size causes the whole repair to be
+refused: it could be a misclassified file. Unrelated directory or ownership
+damage must be resolved first. The repair changes only the deletion byte of
+unwanted records. It preserves the first root label, boot-sector label, file
+contents, names, dates and allocation. It does not rename or synchronize labels.
+
+Version-19 journals save original directory sectors. The plan is recomputed
+before writing and validated again for undo, including partial transactions.
+Tests cover exact bytes, long-name tree preservation, independent FAT checking,
+ambiguous-record refusal, forged journals, cancellation, directory read errors,
+torn writes and failed-flush rollback. QEMU checks CLI preview, TUI cancellation,
+report export, typed approval, clean rescan and exact reboot undo on FAT12/16/32
+under MS-DOS 6.22, FreeDOS and Windows 98 DOS. FAT32 access under MS-DOS 6.22
+uses MagicDisk's direct BIOS backend; it does not add FAT32 support to DOS.
+
 ## Invalid DOS alias repair
 
 `MAGICDSK IMAGE.IMG --repair-short-names` previews replacement of invalid DOS
@@ -1610,6 +1741,51 @@ validation on real hardware. Support is limited to the verified legacy IDE
 port pairs and devices advertising ATA flush support. Other controllers are
 refused; broader hardware and cache compatibility remain future work.
 
+## Finding volumes with missing partition entries
+
+![MagicDisk discovered FAT volumes](docs/discovery.png)
+
+Disk > Search lost volumes scans a chosen sector range without relying on the
+partition table. Enter the first disk LBA and a sector count; zero count in the
+TUI searches to the end. Esc cancels. The results identify FAT12/16/32 geometry
+corroborated by reserved entries in at least one FAT copy. A FAT32 backup can
+identify a volume whose primary boot sector cannot mount. Its boot-source
+number is shown explicitly.
+
+Use arrows, Page Up/Page Down, or Home/End to select a candidate. Enter
+opens its map for checks, sector viewing, and file export. F2 switches among the discovered candidates. These volumes remain
+read-only: filesystem repair and filesystem journal-restore actions are disabled. Opening another
+disk or image restores normal partition selection. Cancelling the results
+picker keeps the previous selection.
+
+The same workflow is available from the command line:
+
+```text
+MAGICDSK DISK.IMG --find-volumes
+MAGICDSK --bios 81 --find-volumes --search-first 0 --search-count 100000
+MAGICDSK --bios 81 --volume-start 63
+MAGICDSK --bios 81 --volume-start 63 --boot-source 6
+MAGICDSK DISK.IMG --volume-start 63 --export-files D:\RECOVERY
+```
+
+The CLI rejects zero `--search-count`; omit it to search from `--search-first`
+(default zero) to the end. `--volume-start` access cannot be combined with
+`--apply` (except with explicit `--rebuild-mbr`), partition selection or a mounted DOS drive. It does not recreate a
+partition entry. File export can combine `--volume-start` and `--boot-source`
+to recover readable files through a validated FAT32 backup. The export still
+reports the damaged primary boot sector; that finding is not silently cleared.
+
+Candidates can overlap, describe stale data, or be disk images stored inside
+files. Inspect their contents before deciding what to recover. The search
+cannot identify volumes without mountable BPB geometry and a readable matching
+FAT header. Read failures anywhere in search or candidate validation make the
+result incomplete; the scan continues past unreadable search sectors. The TUI
+retains at most 128 candidates and marks a truncated search incomplete. A
+backup-derived candidate can begin before the requested search range because
+that range locates boot records, not inferred volume starts. Searching every
+sector of a large disk may take substantial time. No search rewrites MBR/EBR
+entries or filesystem data. Reconstructing an entry is a separate reviewed operation.
+
 ## Remaining work
 
 - Broader DOS and hardware compatibility for BIOS repairs.
@@ -1822,3 +1998,44 @@ Fault tests cover unreadable data, cancellation, FAT read failure, destination
 refusal and output-size limits; sanitizer runs cover the export path. QEMU checks
 the CLI and Report-menu action under MS-DOS 6.22 and FreeDOS, and the Report-menu
 action under Windows 98 DOS, including retained manifests and source hashes.
+
+
+### Reconstructing a missing MBR entry
+
+Disk > Reconstruct MBR asks for an entirely empty slot (1–4), candidate start
+LBA, boot source (0 for primary, or the validated FAT32 backup sector), and BIOS
+CHS geometry. Review the proposed extent and any BPB hidden-sector mismatch,
+choose a new journal path, and type MBR to apply. Discover and inspect the
+candidate's files first. Geometry must describe the BIOS disk; it is not inferred
+from potentially stale boot-sector fields.
+
+```text
+MAGICDSK DISK.IMG --rebuild-mbr 2 --volume-start 63 --chs 16 63
+MAGICDSK DISK.IMG --rebuild-mbr 2 --volume-start 63 --chs 16 63 --apply --journal NEW.MDJ
+MAGICDSK DISK.IMG --restore-mbr NEW.MDJ --apply
+```
+
+Use `--bios 81` instead of the image path for a second BIOS disk. Add
+`--boot-source 6` when using a corroborated FAT32 backup. The compact `--chs H S`
+form keeps DOS commands short; separate `--chs-heads H` and `--chs-sectors S`
+options are also accepted. Keep the whole command within DOS's command-line
+limit, including redirection and journal paths.
+
+Only one inactive primary entry and the MBR signature are inserted. Bootstrap
+code, existing entries, active flags, BPB fields and filesystem contents are
+preserved. Overlap, ambiguous entries, GPT headers/protective entries, unreadable
+validation metadata, and superfloppies are refused. This does not reconstruct
+EBRs, missing filesystem geometry, or boot code. It cannot establish that a
+stale but internally consistent candidate is the volume you intended to recover.
+
+The separate MBR journal is committed and read back before writing LBA zero.
+Current metadata is checked again, the write is flushed and verified, and failure
+attempts exact rollback. Undo revalidates the original insertion and candidate
+identity; `--accept-torn` (Disk > Undo interrupted MBR) additionally accepts only
+saved before/after byte mixtures. Keep the journal even after success.
+
+BIOS writes retain the unmounted-disk and separate IDE journal-disk checks.
+After reboot, DOS may mount the restored partition and prevent BIOS undo; use a
+boot environment where the source remains unmounted. Mounted DOS drive letters
+cannot be used for MBR reconstruction. The MBR write capability permits only
+sector zero and does not widen normal filesystem write ranges.

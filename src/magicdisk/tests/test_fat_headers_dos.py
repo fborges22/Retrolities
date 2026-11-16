@@ -110,6 +110,11 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-fat-header-') as directory:
                         step('Clear invalid timestamps', 'up', True) +
                         step('Clear invalid long names', 'up', True) +
                         step('Repair invalid DOS names', 'up', True) +
+        step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
                         step('Rebuild FAT32 FSInfo', 'up', bits == 32) +
                         step('Rebuild backup boot', 'up', bits == 32) +
                         step('Rebuild FAT copies', 'up', True) +

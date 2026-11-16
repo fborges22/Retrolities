@@ -84,11 +84,39 @@ static int alias_policy_plan(DtVolume *v, int policy, DtPlan *plan, DtProgress p
     return ok;
 }
 
+static int conflict_policy_plan(DtVolume *v, int policy, DtPlan *plan, DtProgress progress,
+                                void *ctx, char *err)
+{
+    unsigned previous = dt_oem_codepage();
+    int ok;
+
+    if (policy < 0 || !dt_set_oem_codepage((unsigned)policy))
+        return fail(err, "Alias journal has an unsupported OEM policy");
+    ok = dt_conflict_plan(v, plan, progress, ctx, err);
+    dt_set_oem_codepage(previous);
+    return ok;
+}
+
+static int label_text_policy_plan(DtVolume *v, int policy, DtPlan *plan, DtProgress progress,
+                                  void *ctx, char *err)
+{
+    unsigned previous = dt_oem_codepage();
+    int ok;
+
+    if (policy < 0 || !dt_set_oem_codepage((unsigned)policy))
+        return fail(err, "Alias journal has an unsupported OEM policy");
+    ok = dt_label_text_plan(v, plan, progress, ctx, err);
+    dt_set_oem_codepage(previous);
+    return ok;
+}
+
 static dt_u32 sector_limit(const DtPlan *plan)
 {
     return (plan->kind == DT_REPAIR_CHAINS || plan->kind == DT_REPAIR_TREE ||
             plan->kind == DT_REPAIR_TREE_SOURCE || plan->kind == DT_REPAIR_ENTRIES ||
             plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
+            plan->kind == DT_REPAIR_CONFLICTS || plan->kind == DT_REPAIR_LABEL_TEXT ||
+            plan->kind == DT_REPAIR_EXTRA_DOTS || plan->kind == DT_REPAIR_ATTRIBUTES ||
             plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
             (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
              plan->kind == DT_REPAIR_RELOCATE_DIR || plan->kind == DT_REPAIR_RELOCATE_ROOT))
@@ -105,8 +133,8 @@ DtPatch *dt_plan_sector(DtPlan *plan, dt_u32 sector, char *err)
     for (i = 0; i < plan->count; i++)
         if (plan->patch[i].sector == sector)
             return &plan->patch[i];
-    if ((!sector && plan->kind != DT_REPAIR_BOOT_PRIMARY &&
-         plan->kind != DT_REPAIR_RELOCATE_ROOT) ||
+    if ((!sector && plan->kind != DT_REPAIR_BOOT_PRIMARY && plan->kind != DT_REPAIR_RELOCATE_ROOT &&
+         plan->kind != DT_REPAIR_LABEL_TEXT) ||
         sector >= limit || plan->count >= limit - 1) {
         fail(err, "Repair plan exceeds sector bounds");
         return NULL;
@@ -198,8 +226,11 @@ static int identity(DtPlan *plan, char *err)
     const unsigned char *root_after = NULL;
     unsigned i, j;
 
-    if (plan->kind == DT_REPAIR_RELOCATE_ROOT) {
-        if (v->bits != 32)
+    if (plan->kind == DT_REPAIR_RELOCATE_ROOT || plan->kind == DT_REPAIR_LABEL_TEXT) {
+        unsigned first = plan->kind == DT_REPAIR_LABEL_TEXT ? (v->bits == 32 ? 71 : 43) : 44;
+        unsigned last = first + (plan->kind == DT_REPAIR_LABEL_TEXT ? 11 : 4);
+
+        if (plan->kind == DT_REPAIR_RELOCATE_ROOT && v->bits != 32)
             return fail(err, "Root relocation requires FAT32");
         for (i = 0; i < plan->count; i++) {
             DtPatch *patch = &plan->patch[i];
@@ -207,10 +238,10 @@ static int identity(DtPlan *plan, char *err)
             if (patch->sector)
                 continue;
             if (memcmp(patch->before, plan->volume_boot, 512))
-                return fail(err, "Root relocation boot identity is inconsistent");
+                return fail(err, "Boot-changing repair identity is inconsistent");
             for (j = 0; j < 512; j++) {
-                if ((j < 44 || j >= 48) && patch->before[j] != patch->after[j])
-                    return fail(err, "Root relocation changes unrelated boot metadata");
+                if ((j < first || j >= last) && patch->before[j] != patch->after[j])
+                    return fail(err, "Repair changes unrelated boot metadata");
             }
             root_after = patch->after;
         }
@@ -254,7 +285,11 @@ static int save_journal(DtPlan *plan, const char *path, DtWriteProgress writing,
     memset(header, 0, sizeof(header));
     memcpy(header, "MDJNL001", 8);
     put32(header + 8,
-          plan->kind == DT_REPAIR_LABELS          ? 19
+          plan->kind == DT_REPAIR_LABEL_TEXT      ? 23
+          : plan->kind == DT_REPAIR_EXTRA_DOTS    ? 22
+          : plan->kind == DT_REPAIR_ATTRIBUTES    ? 21
+          : plan->kind == DT_REPAIR_CONFLICTS     ? 20
+          : plan->kind == DT_REPAIR_LABELS        ? 19
           : plan->kind == DT_REPAIR_ALIASES       ? 18
           : plan->kind == DT_REPAIR_LFN           ? 17
           : plan->kind == DT_REPAIR_SALVAGE       ? 16
@@ -338,7 +373,7 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         goto invalid;
     version = dt_dword(header + 8);
     kind = dt_dword(header + 36);
-    if ((version < 1 || version > 19) || kind > DT_REPAIR_LABELS ||
+    if ((version < 1 || version > 23) || kind > DT_REPAIR_LABEL_TEXT ||
         (version == 1 && kind != DT_REPAIR_BAD) ||
         (version == 3 ? kind != DT_REPAIR_MIRROR : kind == DT_REPAIR_MIRROR) ||
         (version == 4 ? kind != DT_REPAIR_LOST : kind == DT_REPAIR_LOST) ||
@@ -356,7 +391,11 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         (version == 16 ? kind != DT_REPAIR_SALVAGE : kind == DT_REPAIR_SALVAGE) ||
         (version == 17 ? kind != DT_REPAIR_LFN : kind == DT_REPAIR_LFN) ||
         (version == 18 ? kind != DT_REPAIR_ALIASES : kind == DT_REPAIR_ALIASES) ||
-        (version == 19 ? kind != DT_REPAIR_LABELS : kind == DT_REPAIR_LABELS))
+        (version == 19 ? kind != DT_REPAIR_LABELS : kind == DT_REPAIR_LABELS) ||
+        (version == 20 ? kind != DT_REPAIR_CONFLICTS : kind == DT_REPAIR_CONFLICTS) ||
+        (version == 21 ? kind != DT_REPAIR_ATTRIBUTES : kind == DT_REPAIR_ATTRIBUTES) ||
+        (version == 22 ? kind != DT_REPAIR_EXTRA_DOTS : kind == DT_REPAIR_EXTRA_DOTS) ||
+        (version == 23 ? kind != DT_REPAIR_LABEL_TEXT : kind == DT_REPAIR_LABEL_TEXT))
         goto invalid;
     plan->kind = (int)kind;
     if (kind == DT_REPAIR_SALVAGE) {
@@ -370,7 +409,8 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
     }
     count = dt_dword(header + 12);
     if (!count || count >= sector_limit(plan) ||
-        (kind != DT_REPAIR_TREE_SOURCE && kind != DT_REPAIR_ALIASES && dt_dword(header + 32) > 1))
+        (kind != DT_REPAIR_TREE_SOURCE && kind != DT_REPAIR_ALIASES &&
+         kind != DT_REPAIR_CONFLICTS && kind != DT_REPAIR_LABEL_TEXT && dt_dword(header + 32) > 1))
         goto invalid;
     /* Check the file extent before trusting an untrusted allocation count. */
     if (fseek(file, 0, SEEK_END) || (length = ftell(file)) < 0 ||
@@ -411,10 +451,13 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         goto invalid;
     if ((kind == DT_REPAIR_CHAINS || kind == DT_REPAIR_DIRECTORIES || kind == DT_REPAIR_TREE ||
          kind == DT_REPAIR_ENTRIES || kind == DT_REPAIR_TIMESTAMPS || kind == DT_REPAIR_LFN ||
-         kind == DT_REPAIR_LABELS) &&
+         kind == DT_REPAIR_LABELS || kind == DT_REPAIR_ATTRIBUTES ||
+         kind == DT_REPAIR_EXTRA_DOTS) &&
         (!plan->cluster || plan->mark_bad))
         goto invalid;
-    if (kind == DT_REPAIR_ALIASES && (!plan->cluster || !alias_policy_valid(plan->mark_bad)))
+    if ((kind == DT_REPAIR_ALIASES || kind == DT_REPAIR_CONFLICTS ||
+         kind == DT_REPAIR_LABEL_TEXT) &&
+        (!plan->cluster || !alias_policy_valid(plan->mark_bad)))
         goto invalid;
     if (kind == DT_REPAIR_BOOT_PRIMARY &&
         (v->bits != 32 || count != 1 || plan->mark_bad || !plan->cluster ||
@@ -433,7 +476,8 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
             goto invalid;
         patch->sector = dt_dword(record);
         /* File repairs may include directory sectors; boot-sector writes are excluded. */
-        if ((!patch->sector && kind != DT_REPAIR_BOOT_PRIMARY && kind != DT_REPAIR_RELOCATE_ROOT) ||
+        if ((!patch->sector && kind != DT_REPAIR_BOOT_PRIMARY && kind != DT_REPAIR_RELOCATE_ROOT &&
+             kind != DT_REPAIR_LABEL_TEXT) ||
             patch->sector >= sector_limit(plan))
             goto invalid;
         if (kind == DT_REPAIR_BOOT_PRIMARY &&
@@ -602,8 +646,20 @@ int dt_plan_apply_ex(DtPlan *plan, const char *journal, DtProgress progress, voi
     } else if (plan->kind == DT_REPAIR_TREE_SOURCE) {
         if (!dt_tree_source_plan(v, (unsigned)plan->mark_bad, check, progress, ctx, err))
             goto done;
+    } else if (plan->kind == DT_REPAIR_CONFLICTS) {
+        if (!conflict_policy_plan(v, plan->mark_bad, check, progress, ctx, err))
+            goto done;
     } else if (plan->kind == DT_REPAIR_ALIASES) {
         if (!alias_policy_plan(v, plan->mark_bad, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_LABEL_TEXT) {
+        if (!label_text_policy_plan(v, plan->mark_bad, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_EXTRA_DOTS) {
+        if (!dt_extra_dot_plan(v, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_ATTRIBUTES) {
+        if (!dt_attribute_plan(v, check, progress, ctx, err))
             goto done;
     } else if (plan->kind == DT_REPAIR_LABELS) {
         if (!dt_label_plan(v, check, progress, ctx, err))
@@ -736,7 +792,7 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
     disk.read = original_read;
     original.disk = &disk;
     original.cache_sector = 0xffffffffUL;
-    if (plan->kind == DT_REPAIR_RELOCATE_ROOT &&
+    if ((plan->kind == DT_REPAIR_RELOCATE_ROOT || plan->kind == DT_REPAIR_LABEL_TEXT) &&
         !dt_mount(&disk, plan->start, plan->total, &original, err)) {
         dt_plan_free(expected);
         return 0;
@@ -765,6 +821,13 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
     else if (plan->kind == DT_REPAIR_FAT_HEADERS)
         ok = dt_fat_header_plan(
             &original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_CONFLICTS)
+        ok = conflict_policy_plan(&original,
+                                  plan->mark_bad,
+                                  expected,
+                                  progress ? restore_progress : NULL,
+                                  &tracking,
+                                  err);
     else if (plan->kind == DT_REPAIR_ALIASES)
         ok = alias_policy_plan(&original,
                                plan->mark_bad,
@@ -772,6 +835,19 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
                                progress ? restore_progress : NULL,
                                &tracking,
                                err);
+    else if (plan->kind == DT_REPAIR_LABEL_TEXT)
+        ok = label_text_policy_plan(&original,
+                                    plan->mark_bad,
+                                    expected,
+                                    progress ? restore_progress : NULL,
+                                    &tracking,
+                                    err);
+    else if (plan->kind == DT_REPAIR_EXTRA_DOTS)
+        ok = dt_extra_dot_plan(
+            &original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_ATTRIBUTES)
+        ok = dt_attribute_plan(
+            &original, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_LABELS)
         ok = dt_label_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_LFN)
@@ -802,7 +878,11 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
                              plan->kind == DT_REPAIR_TREE || plan->kind == DT_REPAIR_TREE_SOURCE ||
                              plan->kind == DT_REPAIR_ENTRIES ||
                              plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
-                             plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
+                             plan->kind == DT_REPAIR_CONFLICTS ||
+                             plan->kind == DT_REPAIR_LABEL_TEXT ||
+                             plan->kind == DT_REPAIR_EXTRA_DOTS ||
+                             plan->kind == DT_REPAIR_ATTRIBUTES || plan->kind == DT_REPAIR_LABELS ||
+                             plan->kind == DT_REPAIR_ALIASES ||
                              plan->kind == DT_REPAIR_FAT_HEADERS ||
                              (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
                               plan->kind == DT_REPAIR_RELOCATE_DIR ||
@@ -853,6 +933,8 @@ static int restore_plan(DtVolume *v, const char *journal, DtProgress progress, v
          plan->kind == DT_REPAIR_DIRECTORIES || plan->kind == DT_REPAIR_TREE ||
          plan->kind == DT_REPAIR_TREE_SOURCE || plan->kind == DT_REPAIR_ENTRIES ||
          plan->kind == DT_REPAIR_TIMESTAMPS || plan->kind == DT_REPAIR_LFN ||
+         plan->kind == DT_REPAIR_CONFLICTS || plan->kind == DT_REPAIR_LABEL_TEXT ||
+         plan->kind == DT_REPAIR_EXTRA_DOTS || plan->kind == DT_REPAIR_ATTRIBUTES ||
          plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
          plan->kind == DT_REPAIR_FAT_HEADERS ||
          (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||

@@ -285,3 +285,110 @@ INVALID DOS ALIAS REPAIR
   sessions. Candidate checks read their directory namespace. Full ownership
   and proposed-volume scans still run before approval. Preparation can be
   cancelled. Unknown DBCS punctuation is not guessed.
+
+VOLUME-LABEL REPAIR
+  MAGICDSK IMAGE.IMG --repair-labels
+  Add --apply --journal NEW.MDJ after reviewing the preview.
+  Diagnose > Repair volume labels requires typing LABELS.
+  Keeps the first root label; removes extra and subdirectory labels.
+  Labels with a cluster pointer or file size cause the repair to be refused.
+  Boot labels, names, contents, dates and allocation stay intact.
+  Version-19 journals preserve original directory sectors for validated undo.
+
+DUPLICATE FILENAME REPAIR
+  MAGICDSK IMAGE.IMG --repair-name-conflicts
+  Preview first; add --apply --journal NEW.MDJ to write.
+  Diagnose > Repair name conflicts requires typing NAMES.
+  Keep the first name; later conflicts receive unique R0000001.CHK names.
+  Conflicting LFNs are replaced. Other LFN text, contents and allocation stay.
+  F6/F7 show or export the planned names and original replaced LFN slots.
+  Version-20 journals preserve original sectors and the source OEM policy.
+
+RESERVED ATTRIBUTE REPAIR
+  MAGICDSK IMAGE.IMG --clear-extra-dots
+
+  Diagnose > Remove extra dot entries requires typing DOTS.
+  Removes root dot entries and redundant dots beyond a valid leading pair.
+  Requires matching pointers, directory attributes and zero size; ambiguous
+  metadata or unrelated structural damage is refused. Only deletion bytes
+  change. File data, allocation, timestamps and LFN records stay intact.
+  Preview first; use --apply --journal NEW.MDJ on a separate disk to apply.
+  Version-22 journals preserve original sectors for exact or partial undo.
+
+  MAGICDSK IMAGE.IMG --repair-label-text
+
+  DIR_LABEL_NAME reports control bytes, DOS punctuation and a leading space.
+  Preview replaces invalid bytes with underscores; interior spaces and valid
+  OEM bytes are preserved. Unknown high-byte text needs an explicit supported
+  code page before punctuation is changed. Diagnose > Repair volume label text
+  requires typing TEXT and a new journal on a separate disk. Findings P opens
+  the same review. Raw before/after label bytes appear in the preview.
+  Root-label changes synchronize extended boot labels (signature 29h) and an
+  exactly matching FAT32 backup. Repair a damaged backup first. Version-23
+  journals preserve OEM policy and all original sectors for exact/partial undo.
+
+  If all three defects occur together, clear reserved attributes, repair
+  volume labels, then repair name conflicts. Label cleanup preserves and
+  reports existing filename collisions. Undo the three journals in reverse.
+
+  Duplicate names and extra labels can coexist with reserved attribute bits.
+  Clear attributes first, then repair names or volume labels as reported by
+  FOLLOWUP_CONFLICTS or FOLLOWUP_LABELS. Undo the follow-up journal first.
+  Labels with cluster pointers, nonzero sizes or directory bits are refused,
+  even if their reserved bits already are clear.
+
+  Extra dot records with reserved attribute bits can be repaired in stages:
+  clear attributes first, then remove extra dots. FOLLOWUP_DOTS lists the
+  remaining dot records. Ambiguous pointers, sizes and missing leading pairs
+  are refused. Undo the dot journal before the attribute journal.
+
+  MAGICDSK IMAGE.IMG --repair-attributes
+  Preview first; add --apply --journal NEW.MDJ to write.
+  Diagnose > Repair reserved attributes requires typing FLAGS.
+  Clears only reserved attribute bits 40h and 80h in live records.
+  Defined flags, entry types, names, LFN text, contents and allocation stay.
+  Ambiguous types and unrelated LFN damage are refused.
+  Version-21 journals preserve original sectors for validated undo.
+  Invalid DOS aliases may remain unchanged; FOLLOWUP_NAMES reports them.
+  Repair attributes first, then DOS aliases. Undo the journals in reverse
+  order to restore the original combined damage.
+
+FINDING VOLUMES WITHOUT PARTITION ENTRIES
+  Disk > Search lost volumes scans a disk LBA range. Zero count searches
+  to the end in the TUI. Esc cancels; incomplete results remain identified.
+  Enter inspects a candidate read-only; F2 selects other candidates.
+  Checks, maps, sector inspection and file export remain available.
+  Filesystem repairs and filesystem undo stay disabled for candidates.
+
+  MAGICDSK DISK.IMG --find-volumes
+  MAGICDSK --bios 81 --find-volumes --search-first 0 --search-count 100000
+  MAGICDSK --bios 81 --volume-start 63
+  MAGICDSK --bios 81 --volume-start 63 --boot-source 6
+
+  Omit CLI search-count to search to the end; explicit zero is invalid.
+  Candidate BPBs need matching reserved entries in at least one FAT.
+  FAT32 backups can identify volumes with an invalid primary boot sector.
+  Candidates can overlap or be stale. Inspect and export before recovery.
+  Read failures make results incomplete. The TUI holds 128 candidates.
+  Discovery itself never writes partition entries or filesystem sectors.
+  Backup-based file export may combine --volume-start, --boot-source and
+  --export-files. The primary-boot finding stays visible in the manifest.
+
+MBR RECONSTRUCTION
+  Disk > Reconstruct MBR: enter empty slot, candidate LBA, boot source,
+  BIOS heads and sectors/track. Review, choose a new journal, type MBR.
+  Inspect candidate files first. Hidden-sector mismatches are displayed.
+  MAGICDSK DISK.IMG --rebuild-mbr 2 --volume-start 63 --chs 16 63
+  Add --apply --journal NEW.MDJ to write after reviewing the preview.
+  MAGICDSK DISK.IMG --restore-mbr NEW.MDJ --apply
+  Use --bios 81 instead of DISK.IMG for the second BIOS disk.
+  Keep commands within DOS's line limit, including redirection.
+  Add --boot-source 6 for a corroborated FAT32 backup.
+  Inserts one inactive primary entry; preserves bootstrap and other slots.
+  Does not repair EBRs, boot code, BPB fields, or missing volume geometry.
+  Refuses overlaps, ambiguous entries, GPT evidence and unreadable metadata.
+  Separate MBR journal is committed and verified before writing sector zero.
+  Failed writes attempt exact rollback. Keep the journal after success.
+  Undo interrupted MBR / --accept-torn accepts only saved byte mixtures.
+  BIOS writes require an unmounted source and separate IDE journal disk.
+  DOS may mount the reconstructed partition after reboot and prevent undo.

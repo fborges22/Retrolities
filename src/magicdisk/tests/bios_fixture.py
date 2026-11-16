@@ -68,7 +68,7 @@ def prepare(root, source_boot, kernel, probe, name):
 
 
 def run_vm(boot, disk, cylinders, hard, hard_cylinders, floppy=None, protected=False, backend=None,
-           target_bus="ide.1", target_unit=0, system_backend=None, target_kind="ide", timeout=120):
+           target_bus="ide.1", target_unit=0, system_backend=None, target_kind="ide", timeout=120, rtc=None):
     assert target_kind in ["ide", "virtio"]
     argv = ['qemu-system-i386', '-accel', 'tcg', '-m', '64', '-display', 'none',
             '-serial', 'none', '-monitor', 'stdio', '-no-reboot', '-boot', 'a',
@@ -79,6 +79,8 @@ def run_vm(boot, disk, cylinders, hard, hard_cylinders, floppy=None, protected=F
             '-device', (f'ide-hd,drive=testdisk,bus={target_bus},unit={target_unit},cyls={hard_cylinders},heads=16,secs=63,bios-chs-trans=none'
                         if target_kind == 'ide' else 'virtio-blk-pci,drive=testdisk'),
             '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04']
+    if rtc:
+        argv += ['-rtc', 'base=' + rtc]
     if floppy:
         argv += ['-drive', f'file={floppy},format=raw,if=floppy,index=1' +
                  (',readonly=on' if protected else '')]

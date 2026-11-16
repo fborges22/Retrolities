@@ -253,10 +253,10 @@ static int finish_name(Scan *s, Directory *d, const unsigned char *entry)
     return !invalid;
 }
 
-int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned char *alias)
+static int decode_lfn(const unsigned char *entries, unsigned count, const unsigned char *alias,
+                      Directory *directory)
 {
     Scan scan;
-    Directory directory;
     DtResult result;
     unsigned i;
     int valid;
@@ -264,13 +264,20 @@ int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned ch
     if (!entries || !alias || !count || count > 20)
         return 0;
     memset(&scan, 0, sizeof(scan));
-    memset(&directory, 0, sizeof(directory));
+    memset(directory, 0, sizeof(*directory));
     memset(&result, 0, sizeof(result));
     scan.r = &result;
     for (i = 0; i < count; i++)
-        long_entry(&scan, &directory, entries + i * 32, 0);
-    valid = finish_name(&scan, &directory, alias);
+        long_entry(&scan, directory, entries + i * 32, 0);
+    valid = finish_name(&scan, directory, alias);
     return valid && !result.errors;
+}
+
+int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned char *alias)
+{
+    Directory directory;
+
+    return decode_lfn(entries, count, alias, &directory);
 }
 
 static void file_name(const Directory *d, const unsigned char *entry, int long_name, char *out)
@@ -339,6 +346,25 @@ static void file_name(const Directory *d, const unsigned char *entry, int long_n
     out[n] = 0;
 }
 
+/* Decode only validated VFAT text, using the same Unicode rules as scanning. */
+int dt_lfn_text(const unsigned char *entries, unsigned count, const unsigned char *alias, char *out,
+                size_t capacity)
+{
+    Directory directory;
+    char text[768];
+
+    if (!out || !capacity)
+        return 0;
+    out[0] = 0;
+    if (!decode_lfn(entries, count, alias, &directory))
+        return 0;
+    file_name(&directory, alias, 1, text);
+    if (strlen(text) >= capacity)
+        return 0;
+    strcpy(out, text);
+    return 1;
+}
+
 int dt_invalid_alias_byte(const unsigned char *entry)
 {
     unsigned i;
@@ -358,6 +384,42 @@ int dt_invalid_alias_byte(const unsigned char *entry)
             return (int)i;
     }
     return -1;
+}
+
+/* Unknown high bytes may be DBCS lead/trail bytes, so punctuation checks
+   require an ASCII-only label or an explicitly selected single-byte OEM page. */
+int dt_invalid_label_byte(const unsigned char *entry)
+{
+    unsigned i;
+    int ascii = entry[0] != 5;
+
+    for (i = 0; i < 11; i++) {
+        if (entry[i] >= 128)
+            ascii = 0;
+    }
+    for (i = 0; i < 11; i++) {
+        unsigned ch = entry[i];
+
+        if ((ch < 32 && (i || ch != 5)) || (!i && ch == ' ') ||
+            ((ascii || oem_selected) && ch && strchr("\"*+,./:;<=>?[\\]|", ch)))
+            return (int)i;
+    }
+    return -1;
+}
+
+static void label_name(Scan *s, const unsigned char *entry, dt_u32 location, unsigned offset)
+{
+    int invalid = dt_invalid_label_byte(entry);
+
+    if (invalid >= 0) {
+        char message[160];
+
+        sprintf(message,
+                "Volume label contains invalid byte 0x%02X at sector byte %u; label unchanged",
+                entry[invalid],
+                offset + (unsigned)invalid);
+        issue(s, "DIR_LABEL_NAME", location, message);
+    }
 }
 
 static void short_name(Scan *s, const unsigned char *entry, dt_u32 location, unsigned offset,
@@ -543,7 +605,7 @@ static int name_key(const char *name, char *key, size_t capacity)
 /* Query only a validated directory's proposed namespace. The caller still
    validates ownership and the complete volume before accepting any repair. */
 static int namespace_sector(Scan *scan, Directory *directory, dt_u32 sector, const char *wanted,
-                            dt_u32 skip_sector, unsigned skip_offset, int *ended)
+                            dt_u32 skip_sector, unsigned skip_offset, int before_only, int *ended)
 {
     unsigned char data[512];
     char name[768], key[768];
@@ -569,8 +631,13 @@ static int namespace_sector(Scan *scan, Directory *directory, dt_u32 sector, con
             valid_long = finish_name(scan, directory, entry);
             if (scan->r->errors)
                 return -1;
-            if (sector == skip_sector && offset == skip_offset)
+            if (sector == skip_sector && offset == skip_offset) {
+                if (before_only) {
+                    *ended = 2;
+                    return 1;
+                }
                 continue;
+            }
             file_name(directory, entry, 0, name);
             if (!name_key(name, key, sizeof(key)))
                 return -1;
@@ -590,9 +657,9 @@ static int namespace_sector(Scan *scan, Directory *directory, dt_u32 sector, con
     return 1;
 }
 
-int dt_directory_name_available(DtVolume *v, dt_u32 directory_start, const char *candidate,
-                                dt_u32 skip_sector, unsigned skip_offset, DtProgress notify,
-                                void *ctx)
+static int directory_name_available(DtVolume *v, dt_u32 directory_start, const char *candidate,
+                                    dt_u32 skip_sector, unsigned skip_offset, int before_only,
+                                    DtProgress notify, void *ctx)
 {
     Scan scan;
     Directory directory;
@@ -625,8 +692,14 @@ int dt_directory_name_available(DtVolume *v, dt_u32 directory_start, const char 
         for (i = 0; i < count && !ended; i++) {
             if (notify && !notify(ctx, "Check alias namespace", first + i, v->total))
                 return -1;
-            available = namespace_sector(
-                &scan, &directory, first + i, wanted, skip_sector, skip_offset, &ended);
+            available = namespace_sector(&scan,
+                                         &directory,
+                                         first + i,
+                                         wanted,
+                                         skip_sector,
+                                         skip_offset,
+                                         before_only,
+                                         &ended);
             if (available != 1)
                 return available;
         }
@@ -640,8 +713,56 @@ int dt_directory_name_available(DtVolume *v, dt_u32 directory_start, const char 
         if (!cluster)
             return -1;
     }
+    if (before_only && ended != 2)
+        return -1;
     orphan_name(&scan, &directory);
     return result.errors ? -1 : 1;
+}
+
+int dt_directory_name_available(DtVolume *v, dt_u32 directory_start, const char *candidate,
+                                dt_u32 skip_sector, unsigned skip_offset, DtProgress notify,
+                                void *ctx)
+{
+    return directory_name_available(
+        v, directory_start, candidate, skip_sector, skip_offset, 0, notify, ctx);
+}
+
+/* Classify collisions with earlier entries in directory traversal order.
+   Return bit 0 for the alias, bit 1 for the LFN, or -1 on invalid/read/cancel.
+   The caller must independently validate directory ownership. */
+int dt_entry_name_conflicts(DtVolume *v, dt_u32 directory_start, const unsigned char *entry,
+                            const unsigned char *lfn, unsigned count, dt_u32 sector,
+                            unsigned offset, DtProgress notify, void *ctx)
+{
+    Scan scan;
+    Directory directory;
+    DtResult result;
+    char name[768];
+    unsigned i;
+    int long_name, available, conflicts = 0;
+
+    if (count > 20 || offset >= 512 || offset % 32 || (count && !lfn))
+        return -1;
+    memset(&scan, 0, sizeof(scan));
+    memset(&directory, 0, sizeof(directory));
+    memset(&result, 0, sizeof(result));
+    scan.v = v;
+    scan.r = &result;
+    for (i = 0; i < count; i++)
+        long_entry(&scan, &directory, lfn + i * 32, v->start + sector);
+    long_name = finish_name(&scan, &directory, entry);
+    if (result.errors)
+        return -1;
+    for (i = 0; i <= (unsigned)long_name; i++) {
+        file_name(&directory, entry, i != 0, name);
+        available =
+            directory_name_available(v, directory_start, name, sector, offset, 1, notify, ctx);
+        if (available < 0)
+            return -1;
+        if (!available)
+            conflicts |= 1 << i;
+    }
+    return conflicts;
 }
 
 static int remember_name(Scan *s, Directory *d, const char *name, dt_u32 location, unsigned offset)
@@ -769,6 +890,7 @@ static int directory_sector(Scan *s, dt_u32 sector, Directory *d)
                     s, "DIR_ATTRIBUTE", location, "Invalid directory entry attributes (disk LBA)");
             if (e[11] & 8) {
                 orphan_name(s, d);
+                label_name(s, e, location, i);
                 if (d->root && d->label_seen) {
                     char message[160];
 

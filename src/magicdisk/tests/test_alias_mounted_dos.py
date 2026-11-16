@@ -39,6 +39,12 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-alias-mounted-') as directory
         target_cylinders = (63 + sectors + 1007) // 1008 + 1
         hard = root / 'TARGET.IMG'
         hard.write_bytes(mbr + broken + bytes(target_cylinders * 1008 * 512 - len(mbr) - len(broken)))
+        # DOS may update the access date when the cached alias is read.
+        # Keep the guest date equal to the fixture for exact-sector checks.
+        stamp = struct.unpack_from('<H', broken, entry + 18)[0]
+        year, month, day = 1980 + (stamp >> 9), (stamp >> 5) & 15, stamp & 31
+        assert month and day
+        rtc = f'{year:04d}-{month:02d}-{day:02d}T12:00:00'
         drive = 'B' if bits == 12 else 'D'
         target = volume if bits == 12 else hard
         file_offset = entry if bits == 12 else 63 * 512 + entry
@@ -46,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-alias-mounted-') as directory
             batch = ['@echo off', 'C:', 'cd \\'] + lines + ['EXITTEST.COM']
             put(system_image, text_file(root, 'RUN.BAT', '\n'.join(batch) + '\n'))
             run_vm(boot, system, cylinders, hard, target_cylinders,
-                   floppy=volume if bits == 12 else None)
+                   floppy=volume if bits == 12 else None, rtc=rtc)
         # Establish the kernel's mounted-state bytes before comparing repairs.
         boot_batch([f'DIR {drive}:\\ > A:\\BEFORE.TXT',
                     f'MAGICDSK --drive {drive} > A:\\SCAN.TXT',

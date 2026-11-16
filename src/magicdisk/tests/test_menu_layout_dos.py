@@ -17,9 +17,9 @@ args = parser.parse_args()
 original_boot = digest(args.boot)
 # Anchors and specific labels are expectations of the public menu layout.
 menus = [
-    ('disk', 1, 6, 'Open image...', 'Exit             Esc', ['Select volume...   F2']),
-    ('diagnose', 9, 21, 'Filesystem check  F3', 'Clear invalid timestamps...',
-     ['Repair directory entries...', 'Repair directory chains...', 'Repair invalid DOS names...']),
+    ('disk', 1, 10, 'Open image...', 'Exit             Esc', ['Select volume...   F2', 'Search lost volumes...', 'Reconstruct MBR...', 'Undo MBR reconstruction...']),
+    ('diagnose', 9, 26, 'Filesystem check  F3', 'Clear invalid timestamps...',
+     ['Repair directory entries...', 'Repair directory chains...', 'Remove extra dot entries...']),
     ('view', 21, 7, 'Allocation map    F5', 'Cluster owner...   O', ['Retest map block   T']),
     ('report', 29, 5, 'Save report...    F7', 'Find orphan directories...',
      ['Recover interrupted write...', 'Recover deleted files...']),
@@ -115,10 +115,10 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-menu-layout-') as directory:
                     raw = press('right', menu[3])
                 check(raw, menu)
                 if menu[2] > 20:
-                    check(press('pgdn', 'Clear invalid long names...'), menu)
+                    check(press('pgdn', 'Repair reserved attributes...'), menu)
                 check(press('pgdn', menu[4]), menu)
                 if menu[2] > 20:
-                    check(press('pgup', 'Surface read      F4'), menu)
+                    check(press('pgup', 'Recover primary boot...'), menu)
                 check(press('pgup', menu[3]), menu)
                 check(press('end', menu[4]), menu)
                 check(press('home', menu[3]), menu)

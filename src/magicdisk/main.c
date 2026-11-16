@@ -48,6 +48,11 @@ static void usage(void)
          "       MAGICDSK --devices               List BIOS-reported devices\n"
          "       MAGICDSK --dos-map               Show DOS-to-BIOS drive inventory\n"
          "Options: --list | --partition N | --surface | --retest-bad\n"
+         "         --find-volumes [--search-first LBA] [--search-count SECTORS]\n"
+         "         --volume-start LBA             Inspect without a partition entry\n"
+         "         --rebuild-mbr SLOT --volume-start LBA --chs H S\n"
+         "                                       Preview an inactive missing MBR entry\n"
+         "         --restore-mbr FILE --apply     Undo an MBR reconstruction journal\n"
          "         --code-page 0|437|850|852|860|866 (0 keeps unknown OEM bytes escaped)\n"
          "         --mark-bad CLUSTER | --unmark-bad CLUSTER\n"
          "         --mark-sector DISK_LBA | --unmark-sector DISK_LBA\n"
@@ -59,7 +64,11 @@ static void usage(void)
          "         --repair-fat SOURCE           Rebuild FAT copies from source 1, 2, ...\n"
          "         --fat-source N                Explicit authority for --repair-tree\n"
          "         --repair-tree                 Repair file/directory chains and dot entries\n"
+         "         --repair-label-text           Normalize invalid label bytes (preview)\n"
+         "         --clear-extra-dots            Remove redundant dot entries (preview)\n"
+         "         --repair-attributes           Clear reserved attribute bits (preview)\n"
          "         --repair-labels               Remove duplicate/misplaced labels (preview)\n"
+         "         --repair-name-conflicts       Rename duplicate names (preview)\n"
          "         --repair-short-names          Replace invalid DOS aliases (preview)\n"
          "         --clear-invalid-lfn           Remove invalid long-name records (preview)\n"
          "         --clear-invalid-timestamps    Clear invalid date/time fields (preview)\n"
@@ -76,7 +85,8 @@ static void usage(void)
          "         --restore-journal FILE --apply  Restore journal sectors\n"
          "         --accept-torn                 Accept only saved before/after byte mixtures\n"
          "Repair writes support images and MS-DOS 6.22/7.1/FreeDOS --drive volumes.\n"
-         "BIOS writes require --partition N, an unmounted IDE disk and a separate IDE journal "
+         "BIOS filesystem writes require --partition N, an unmounted IDE disk and a separate IDE "
+         "journal "
          "disk.\n"
          "Boot clean DOS without disk caches or disk-writing TSRs before BIOS repairs.\n"
          "BIOS device: 00=A, 01=B, 80=first hard disk. Partition N starts at 1.\n"
@@ -87,6 +97,8 @@ static void usage(void)
 
 enum {
     OP_SCAN,
+    OP_MBR,
+    OP_MBR_RESTORE,
     OP_RETEST,
     OP_MARK,
     OP_UNMARK,
@@ -107,7 +119,11 @@ enum {
     OP_ENTRIES,
     OP_TIMESTAMPS,
     OP_LFN,
+    OP_CONFLICTS,
     OP_ALIASES,
+    OP_LABEL_TEXT,
+    OP_EXTRA_DOTS,
+    OP_ATTRIBUTES,
     OP_LABELS,
     OP_RELOCATE,
     OP_SALVAGE
@@ -164,8 +180,16 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
         ok = dt_tree_source_plan_ex(v, source, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_TREE)
         ok = dt_tree_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_LABEL_TEXT)
+        ok = dt_label_text_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_EXTRA_DOTS)
+        ok = dt_extra_dot_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_ATTRIBUTES)
+        ok = dt_attribute_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_LABELS)
         ok = dt_label_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_CONFLICTS)
+        ok = dt_conflict_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_ALIASES)
         ok = dt_alias_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_LFN)
@@ -236,11 +260,29 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
             puts("Leading entries may move within the directory; LFN groups remain intact.");
             puts("Full directories may gain free clusters; original free bytes are journaled.");
             puts("Correct dot order/duplicates; rebuild missing dots with unset timestamps.");
+        } else if (op == OP_LABEL_TEXT) {
+            printf("Normalize %lu volume labels; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+        } else if (op == OP_EXTRA_DOTS) {
+            printf("Remove %lu redundant dot records; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+        } else if (op == OP_ATTRIBUTES) {
+            printf("Clear reserved attribute bits in %lu records; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Preserve defined flags, entry types, names, file contents and allocation.");
         } else if (op == OP_LABELS) {
             printf("Remove %lu duplicate/misplaced labels; %u metadata sectors.\n",
                    (unsigned long)plan->cluster,
                    plan->count);
             puts("Keep the first root label; entries with cluster pointers or sizes are refused.");
+        } else if (op == OP_CONFLICTS) {
+            printf("Rename %lu conflicting/invalid entries; %u metadata sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Keep first names; replace later conflicts with recovery names. Preserve data.");
         } else if (op == OP_ALIASES) {
             printf("Replace %lu invalid DOS aliases; %u metadata sectors.\n",
                    (unsigned long)plan->cluster,
@@ -326,6 +368,20 @@ static int select_codepage(const char *value)
     return 1;
 }
 
+static int found_volume(void *ctx, const DtVolume *volume)
+{
+    dt_u32 *count = (dt_u32 *)ctx;
+
+    ++*count;
+    printf("Candidate %lu: FAT%u  LBA %lu  sectors %lu  boot-source %u\n",
+           (unsigned long)*count,
+           volume->bits,
+           (unsigned long)volume->start,
+           (unsigned long)volume->total,
+           volume->boot_source);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     DtDisk disk;
@@ -336,6 +392,9 @@ int main(int argc, char **argv)
     unsigned count = 0, i, index = 0, drive = 0, boot_source = 0, fat_source = 0;
     char err[160];
     int listing = 0, bios = 0, surface = 0, arg = 2, status;
+    int find_volumes = 0, explicit_start = 0, search_range = 0;
+    unsigned mbr_slot = 0, mbr_heads = 0, mbr_sectors = 0;
+    dt_u32 search_first = 0, search_count = 0, found_count = 0;
     int op = OP_SCAN, apply = 0, sector_arg = 0, torn = 0;
     dt_u32 cluster = 0;
     const char *journal = NULL, *destination = NULL;
@@ -429,7 +488,65 @@ int main(int argc, char **argv)
         arg = 3;
     }
     while (arg < argc) {
-        if (!strcmp(argv[arg], "--list")) {
+        if (!strcmp(argv[arg], "--rebuild-mbr") && op == OP_SCAN && arg + 1 < argc) {
+            dt_u32 value;
+
+            if (!dt_parse_u32(argv[++arg], 10, &value) || value < 1 || value > 4) {
+                puts("MBR slot must be from 1 through 4");
+                return 2;
+            }
+            mbr_slot = (unsigned)value;
+            op = OP_MBR;
+        } else if (!strcmp(argv[arg], "--restore-mbr") && op == OP_SCAN && arg + 1 < argc) {
+            op = OP_MBR_RESTORE;
+            journal = argv[++arg];
+        } else if (!strcmp(argv[arg], "--chs") && arg + 2 < argc) {
+            dt_u32 heads, sectors;
+
+            if (!dt_parse_u32(argv[++arg], 10, &heads) || !heads || heads > 256 ||
+                !dt_parse_u32(argv[++arg], 10, &sectors) || !sectors || sectors > 63) {
+                puts("CHS geometry requires 1..256 heads and 1..63 sectors per track");
+                return 2;
+            }
+            mbr_heads = (unsigned)heads;
+            mbr_sectors = (unsigned)sectors;
+        } else if ((!strcmp(argv[arg], "--chs-heads") || !strcmp(argv[arg], "--chs-sectors")) &&
+                   arg + 1 < argc) {
+            dt_u32 value;
+            int heads = !strcmp(argv[arg], "--chs-heads");
+
+            if (!dt_parse_u32(argv[++arg], 10, &value) || !value || value > (heads ? 256 : 63)) {
+                puts("CHS geometry requires 1..256 heads and 1..63 sectors per track");
+                return 2;
+            }
+            if (heads)
+                mbr_heads = (unsigned)value;
+            else
+                mbr_sectors = (unsigned)value;
+        } else if (!strcmp(argv[arg], "--find-volumes")) {
+            find_volumes = 1;
+        } else if ((!strcmp(argv[arg], "--search-first") || !strcmp(argv[arg], "--search-count") ||
+                    !strcmp(argv[arg], "--volume-start")) &&
+                   arg + 1 < argc) {
+            dt_u32 value;
+            int range_first = !strcmp(argv[arg], "--search-first");
+            int range_count = !strcmp(argv[arg], "--search-count");
+
+            if (!dt_parse_u32(argv[++arg], 10, &value) || (range_count && !value)) {
+                puts("Invalid volume-search sector or count");
+                return 2;
+            }
+            if (range_first) {
+                search_first = value;
+                search_range = 1;
+            } else if (range_count) {
+                search_count = value;
+                search_range = 1;
+            } else {
+                start = value;
+                explicit_start = 1;
+            }
+        } else if (!strcmp(argv[arg], "--list")) {
             listing = 1;
         } else if (!strcmp(argv[arg], "--code-page") && arg + 1 < argc) {
             if (!select_codepage(argv[++arg]))
@@ -483,8 +600,16 @@ int main(int argc, char **argv)
             boot_source = (unsigned)n;
         } else if (!strcmp(argv[arg], "--repair-tree") && op == OP_SCAN) {
             op = OP_TREE;
+        } else if (!strcmp(argv[arg], "--repair-label-text") && op == OP_SCAN) {
+            op = OP_LABEL_TEXT;
+        } else if (!strcmp(argv[arg], "--clear-extra-dots") && op == OP_SCAN) {
+            op = OP_EXTRA_DOTS;
+        } else if (!strcmp(argv[arg], "--repair-attributes") && op == OP_SCAN) {
+            op = OP_ATTRIBUTES;
         } else if (!strcmp(argv[arg], "--repair-labels") && op == OP_SCAN) {
             op = OP_LABELS;
+        } else if (!strcmp(argv[arg], "--repair-name-conflicts") && op == OP_SCAN) {
+            op = OP_CONFLICTS;
         } else if (!strcmp(argv[arg], "--repair-short-names") && op == OP_SCAN) {
             op = OP_ALIASES;
         } else if (!strcmp(argv[arg], "--clear-invalid-lfn") && op == OP_SCAN) {
@@ -550,16 +675,91 @@ int main(int argc, char **argv)
         }
         arg++;
     }
+    if (op == OP_MBR || op == OP_MBR_RESTORE) {
+        DtMbrPlan plan;
+        int restore = op == OP_MBR_RESTORE;
+
+        if (bios == 2 || index || listing || surface || find_volumes || search_range ||
+            fat_source || destination || (torn && (!restore || !apply)) || (apply && !journal) ||
+            (!apply && journal) ||
+            (restore && (!apply || explicit_start || boot_source || mbr_heads || mbr_sectors)) ||
+            (!restore && (!explicit_start || !mbr_heads || !mbr_sectors))) {
+            puts("MBR reconstruction needs a whole disk, an explicit volume start and CHS "
+                 "geometry.");
+            puts("MBR undo needs --restore-mbr FILE --apply; writes require a journal.");
+            return 2;
+        }
+        status = bios    ? dt_bios_open(&disk, drive, err)
+                 : apply ? dt_image_open_write(&disk, argv[1], err)
+                         : dt_image_open(&disk, argv[1], err);
+        if (!status) {
+            puts(err);
+            return 2;
+        }
+        if (!restore) {
+            status = dt_mbr_plan(
+                &disk, mbr_slot, start, boot_source, mbr_heads, mbr_sectors, &plan, err);
+            if (status) {
+                printf("MBR preview: slot %u, FAT%u, LBA %lu, sectors %lu, type %02X\n",
+                       plan.slot,
+                       plan.bits,
+                       (unsigned long)plan.start,
+                       (unsigned long)plan.total,
+                       plan.after[446 + (plan.slot - 1) * 16 + 4]);
+                printf("CHS: %u heads, %u sectors/track; boot source: %u\n",
+                       plan.heads,
+                       plan.sectors,
+                       plan.boot_source);
+                printf("BPB hidden sectors: %lu%s\n",
+                       (unsigned long)dt_dword(plan.volume_boot + 28),
+                       dt_dword(plan.volume_boot + 28) == plan.start ? ""
+                                                                     : " (MISMATCH; unchanged)");
+                puts(
+                    "Inserts an inactive partition; bootstrap and occupied entries are preserved.");
+                puts("Review candidate contents first. This does not repair boot code or the BPB.");
+            }
+        } else {
+            status = 1;
+        }
+        if (status && apply && bios)
+            status = dt_bios_enable_mbr_write(&disk, journal, err);
+        if (status && apply)
+            status = restore ? dt_mbr_restore(&disk, journal, torn, err)
+                             : dt_mbr_apply(&plan, journal, err);
+        if (!status)
+            puts(err);
+        else
+            puts(!apply    ? "Preview only; no sectors written."
+                 : restore ? "MBR restored and verified."
+                           : "MBR reconstructed and verified.");
+        if (!close_disk(&disk, bios))
+            status = 0;
+        return status ? 0 : 2;
+    }
+    if (mbr_heads || mbr_sectors) {
+        puts("CHS geometry options apply only to --rebuild-mbr.");
+        return 2;
+    }
     if ((torn && (op != OP_RESTORE || !apply)) || (fat_source && op != OP_TREE) ||
         (listing && (surface || index || op != OP_SCAN)) || (surface && op != OP_SCAN) ||
         (apply && op != OP_FAT_HEADERS && op != OP_MARK && op != OP_UNMARK && op != OP_RESTORE &&
          op != OP_FSINFO && op != OP_BOOT_BACKUP && op != OP_MIRROR && op != OP_RECLAIM &&
          op != OP_CHAINS && op != OP_DIRECTORIES && op != OP_BOOT_PRIMARY && op != OP_TREE &&
-         op != OP_ENTRIES && op != OP_LFN && op != OP_ALIASES && op != OP_LABELS &&
+         op != OP_ENTRIES && op != OP_LFN && op != OP_ALIASES && op != OP_CONFLICTS &&
+         op != OP_LABELS && op != OP_LABEL_TEXT && op != OP_EXTRA_DOTS && op != OP_ATTRIBUTES &&
          op != OP_TIMESTAMPS && op != OP_RELOCATE && op != OP_SALVAGE) ||
-        (boot_source && op != OP_SCAN && op != OP_BOOT_PRIMARY && op != OP_RESTORE) ||
+        (boot_source && op != OP_SCAN && op != OP_BOOT_PRIMARY && op != OP_RESTORE &&
+         !(explicit_start && op == OP_EXPORT_FILES)) ||
         (journal && !apply) || (apply && !journal) || (op == OP_RESTORE && !apply)) {
         puts("Conflicting options, or missing --apply / --journal for a write operation");
+        return 2;
+    }
+    if ((search_range && !find_volumes) ||
+        (find_volumes && (listing || index || explicit_start || surface || op != OP_SCAN || apply ||
+                          boot_source)) ||
+        (explicit_start && (listing || index || apply)) ||
+        (bios == 2 && (find_volumes || explicit_start))) {
+        puts("Volume discovery requires a whole disk; explicit-start access is read-only.");
         return 2;
     }
     if (dt_oem_codepage())
@@ -583,7 +783,32 @@ int main(int argc, char **argv)
         puts(err);
         return 2;
     }
-    size = disk.sectors;
+    if (find_volumes) {
+        if (search_first >= disk.sectors ||
+            (search_count && search_count > disk.sectors - search_first)) {
+            puts("Volume-search range is outside the disk");
+            close_disk(&disk, bios);
+            return 2;
+        }
+        if (!search_count)
+            search_count = disk.sectors - search_first;
+        puts("Candidate volumes may overlap; inspect their contents before partition recovery.");
+        status = dt_find_volumes(
+            &disk, search_first, search_count, found_volume, &found_count, NULL, NULL, err);
+        printf("Volume search %s: %lu candidates.\n",
+               status ? "complete" : "incomplete",
+               (unsigned long)found_count);
+        if (!status)
+            puts(err);
+        close_disk(&disk, bios);
+        return status ? 0 : 2;
+    }
+    if (explicit_start && start >= disk.sectors) {
+        puts("Volume start is outside the disk");
+        close_disk(&disk, bios);
+        return 2;
+    }
+    size = disk.sectors - start;
     if (index || listing) {
         if (!dt_partitions(&disk, partitions, &count, err)) {
             puts(err);

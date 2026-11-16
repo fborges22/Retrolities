@@ -17,7 +17,7 @@ static void put32(unsigned char *p, dt_u32 value)
         p[i] = (unsigned char)(value >> (8 * i));
 }
 
-/* Auxiliary hints, timestamps and the backup boot copy do not determine ownership.
+/* Auxiliary hints, label text, timestamps and the backup boot copy do not determine ownership.
    Their damage may coexist; layout, primary-mount and live-tree checks still apply. */
 static void metadata_issue(void *ctx, const char *code, dt_u32 where, const char *message)
 {
@@ -27,7 +27,8 @@ static void metadata_issue(void *ctx, const char *code, dt_u32 where, const char
     (void)message;
     if (strcmp(code, "FSINFO_SIGNATURE") && strcmp(code, "FSINFO_FREE") &&
         strcmp(code, "FSINFO_NEXT") && strcmp(code, "FSINFO_RESERVED") &&
-        strcmp(code, "BOOT_BACKUP") && strcmp(code, "DIR_TIMESTAMP"))
+        strcmp(code, "BOOT_BACKUP") && strcmp(code, "DIR_TIMESTAMP") &&
+        strcmp(code, "DIR_LABEL_NAME"))
         *other_damage = 1;
 }
 
@@ -1726,12 +1727,54 @@ int dt_lfn_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char 
 typedef struct {
     LfnRepair names;
     dt_u32 sequence, directory;
+    int conflicts;
 } AliasRepair;
 
 static void alias_issue(void *ctx, const char *code, dt_u32 where, const char *message)
 {
     if (strcmp(code, "DIR_NAME"))
         metadata_issue(ctx, code, where, message);
+}
+
+static void conflict_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    if (strcmp(code, "DIR_DUPLICATE"))
+        alias_issue(ctx, code, where, message);
+}
+
+/* A conflicting long name is replaced inside its existing slots. Keep the
+   final slot as one valid recovery name and mark preceding slots deleted. */
+static int conflict_long_name(AliasRepair *repair, const char *name, unsigned checksum)
+{
+    static const unsigned fields[13] = {1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30};
+    LfnRepair *names = &repair->names;
+    TimestampRepair *common = &names->common;
+    unsigned i, j, length = (unsigned)strlen(name);
+
+    if (!names->count || length > 12)
+        return fail(common->err, "Conflicting LFN has no reusable name slot");
+    for (i = 0; i < names->count; i++) {
+        DtPatch *patch = dt_plan_sector(common->plan, names->sectors[i], common->err);
+        unsigned char *entry;
+
+        if (!patch)
+            return 0;
+        entry = patch->after + names->offsets[i];
+        if (i + 1 < names->count) {
+            entry[0] = 0xe5;
+            continue;
+        }
+        memset(entry, 0, 32);
+        entry[0] = 0x41;
+        entry[11] = 15;
+        entry[13] = (unsigned char)checksum;
+        for (j = 0; j < 13; j++) {
+            unsigned value = j < length ? (unsigned char)name[j] : j == length ? 0 : 0xffff;
+            entry[fields[j]] = (unsigned char)value;
+            entry[fields[j] + 1] = (unsigned char)(value >> 8);
+        }
+    }
+    return 1;
 }
 
 static int alias_entry(AliasRepair *repair, const unsigned char *entry, dt_u32 sector,
@@ -1742,19 +1785,35 @@ static int alias_entry(AliasRepair *repair, const unsigned char *entry, dt_u32 s
     DtPlan *plan = common->plan;
     DtVolume candidate;
     DtDisk disk;
-    int available;
+    int available, conflicts = 0;
     DtPatch *patch;
     unsigned i, checksum;
     char alias[16], display[16], message[160], old_hex[23];
 
-    if (dt_invalid_alias_byte(entry) < 0)
-        return 1;
     if (names->count && !dt_lfn_valid(names->entries, names->count, entry))
         return fail(common->err, "Alias repair requires valid associated long names");
     memset(&disk, 0, sizeof(disk));
     disk.ctx = plan;
     disk.sectors = plan->volume->disk->sectors;
     disk.read = header_preview_read;
+    candidate = *plan->volume;
+    candidate.disk = &disk;
+    candidate.cache_sector = 0xffffffffUL;
+    if (repair->conflicts) {
+        conflicts = dt_entry_name_conflicts(&candidate,
+                                            repair->directory,
+                                            entry,
+                                            names->entries,
+                                            names->count,
+                                            sector,
+                                            offset,
+                                            common->progress,
+                                            common->progress_ctx);
+        if (conflicts < 0)
+            return fail(common->err, "Name conflict query failed or was cancelled");
+    }
+    if (!conflicts && dt_invalid_alias_byte(entry) < 0)
+        return 1;
     for (;;) {
         if (++repair->sequence > 9999999UL)
             return fail(common->err, "No collision-free recovery alias is available");
@@ -1766,16 +1825,18 @@ static int alias_entry(AliasRepair *repair, const unsigned char *entry, dt_u32 s
         checksum = 0;
         for (i = 0; i < 11; i++)
             checksum = (((checksum >> 1) | ((checksum & 1) << 7)) + (unsigned char)alias[i]) & 255;
-        for (i = 0; i < names->count; i++) {
+        for (i = 0; !(conflicts & 2) && i < names->count; i++) {
             patch = dt_plan_sector(plan, names->sectors[i], common->err);
             if (!patch)
                 return 0;
             patch->after[names->offsets[i] + 13] = (unsigned char)checksum;
         }
+        sprintf(display, "%.8s.%.3s", alias, alias + 8);
+        if ((conflicts & 2) && !conflict_long_name(repair, display, checksum))
+            return 0;
         candidate = *plan->volume;
         candidate.disk = &disk;
         candidate.cache_sector = 0xffffffffUL;
-        sprintf(display, "%.8s.%.3s", alias, alias + 8);
         available = dt_directory_name_available(&candidate,
                                                 repair->directory,
                                                 display,
@@ -1798,7 +1859,35 @@ static int alias_entry(AliasRepair *repair, const unsigned char *entry, dt_u32 s
                 old_hex,
                 alias,
                 alias + 8);
-        common->report(common->report_ctx, "RENAME_ALIAS", plan->start + sector, message);
+        if (conflicts & 2) {
+            char original[768], detail[880];
+
+            if (!dt_lfn_text(names->entries, names->count, entry, original, sizeof(original)))
+                return fail(common->err, "Cannot decode original conflicting long name");
+            sprintf(
+                detail, "Replace long name at sector byte %u: %s -> %s", offset, original, display);
+            common->report(common->report_ctx, "RENAME_LONG_NAME", plan->start + sector, detail);
+            sprintf(message,
+                    "Replace conflicting alias/LFN at byte %u: raw_hex=%s to %s; preserve data",
+                    offset,
+                    old_hex,
+                    display);
+            for (i = 0; i < names->count; i++) {
+                char raw[65], detail[120];
+                unsigned j;
+
+                for (j = 0; j < 32; j++)
+                    sprintf(raw + j * 2, "%02X", names->entries[i * 32 + j]);
+                sprintf(
+                    detail, "Original LFN at sector byte %u; raw_hex=%s", names->offsets[i], raw);
+                common->report(
+                    common->report_ctx, "ORIGINAL_LFN", plan->start + names->sectors[i], detail);
+            }
+        }
+        common->report(common->report_ctx,
+                       repair->conflicts ? "RENAME_CONFLICT" : "RENAME_ALIAS",
+                       plan->start + sector,
+                       message);
     }
     return 1;
 }
@@ -1866,10 +1955,11 @@ static int alias_directory(void *ctx, const DtFile *file)
     return 1;
 }
 
-int dt_alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
-                     DtProgress progress, void *ctx, char *err)
+static int alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err, int conflicts)
 {
     AliasRepair repair;
+    DtReport guard = conflicts ? conflict_issue : alias_issue;
     DtResult result;
     DtDisk disk;
     DtVolume candidate;
@@ -1879,13 +1969,14 @@ int dt_alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
     dt_plan_clear(plan);
     err[0] = 0;
     v->cache_sector = 0xffffffffUL;
-    if (!dt_scan_ex(v, &result, alias_issue, &other_damage, progress, ctx) || other_damage)
+    if (!dt_scan_ex(v, &result, guard, &other_damage, progress, ctx) || other_damage)
         return fail(err, "Alias repair requires valid LFNs and unambiguous readable ownership");
     if (!dt_plan_init(plan, v, err))
         return 0;
-    plan->kind = DT_REPAIR_ALIASES;
+    plan->kind = conflicts ? DT_REPAIR_CONFLICTS : DT_REPAIR_ALIASES;
     plan->mark_bad = (int)dt_oem_codepage();
     memset(&repair, 0, sizeof(repair));
+    repair.conflicts = conflicts;
     repair.names.common.plan = plan;
     repair.names.common.report = report;
     repair.names.common.report_ctx = report_ctx;
@@ -1898,8 +1989,7 @@ int dt_alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
                 return 0;
         repair.names.count = 0;
     }
-    if (!dt_scan_files(
-            v, &result, alias_directory, &repair, alias_issue, &other_damage, progress, ctx) ||
+    if (!dt_scan_files(v, &result, alias_directory, &repair, guard, &other_damage, progress, ctx) ||
         other_damage)
         return fail(err, "Alias directory scan failed or cancelled; no writes made");
     memset(&disk, 0, sizeof(disk));
@@ -1916,6 +2006,23 @@ int dt_alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
     return 1;
 }
 
+int dt_alias_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                     DtProgress progress, void *ctx, char *err)
+{
+    return alias_plan_ex(v, plan, report, report_ctx, progress, ctx, err, 0);
+}
+
+int dt_conflict_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                        DtProgress progress, void *ctx, char *err)
+{
+    return alias_plan_ex(v, plan, report, report_ctx, progress, ctx, err, 1);
+}
+
+int dt_conflict_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
+{
+    return dt_conflict_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
+}
+
 int dt_alias_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
 {
     return dt_alias_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
@@ -1928,10 +2035,26 @@ typedef struct {
     int root_seen;
 } LabelRepair;
 
+typedef struct {
+    int other_damage;
+    dt_u32 conflicts;
+} LabelGuard;
+
+static void label_result_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    LabelGuard *guard = (LabelGuard *)ctx;
+
+    if (!strcmp(code, "DIR_DUPLICATE")) {
+        guard->conflicts++;
+        return;
+    }
+    metadata_issue(&guard->other_damage, code, where, message);
+}
+
 static void label_issue(void *ctx, const char *code, dt_u32 where, const char *message)
 {
     if (strcmp(code, "DIR_LABEL"))
-        metadata_issue(ctx, code, where, message);
+        label_result_issue(ctx, code, where, message);
 }
 
 static int label_sector(LabelRepair *repair, dt_u32 sector, int root, int *end)
@@ -2020,12 +2143,17 @@ int dt_label_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
     DtDisk disk;
     DtVolume candidate;
     dt_u32 sector;
-    int other_damage = 0, end = 0;
+    LabelGuard before, traversal, after;
+    int end = 0;
+
+    memset(&before, 0, sizeof(before));
+    memset(&traversal, 0, sizeof(traversal));
+    memset(&after, 0, sizeof(after));
 
     dt_plan_clear(plan);
     err[0] = 0;
     v->cache_sector = 0xffffffffUL;
-    if (!dt_scan_ex(v, &result, label_issue, &other_damage, progress, ctx) || other_damage)
+    if (!dt_scan_ex(v, &result, label_issue, &before, progress, ctx) || before.other_damage)
         return fail(err, "Label repair requires readable, unambiguous directory ownership");
     if (!dt_plan_init(plan, v, err))
         return 0;
@@ -2042,9 +2170,347 @@ int dt_label_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
             if (!label_sector(&repair, v->root + sector, 1, &end))
                 return 0;
     if (!dt_scan_files(
-            v, &result, label_directory, &repair, label_issue, &other_damage, progress, ctx) ||
-        other_damage)
+            v, &result, label_directory, &repair, label_issue, &traversal, progress, ctx) ||
+        traversal.other_damage)
         return fail(err, "Label directory scan failed or cancelled; no writes made");
+    memset(&disk, 0, sizeof(disk));
+    disk.ctx = plan;
+    disk.sectors = v->disk->sectors;
+    disk.read = header_preview_read;
+    candidate = *v;
+    candidate.disk = &disk;
+    candidate.cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(&candidate, &result, label_result_issue, &after, progress, ctx) ||
+        after.other_damage || after.conflicts != before.conflicts)
+        return fail(err, "Proposed label repair did not pass filesystem validation");
+    /* Labels never participate in the filename namespace. Removing them must
+       preserve all existing name conflicts for a separately reviewed repair. */
+    if (report && after.conflicts) {
+        char message[160];
+
+        sprintf(message,
+                "%lu name-conflict findings remain unchanged; run name-conflict repair next",
+                (unsigned long)after.conflicts);
+        report(report_ctx, "FOLLOWUP_CONFLICTS", v->start, message);
+    }
+    return 1;
+}
+
+int dt_label_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
+{
+    return dt_label_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
+}
+
+/* Label text never owns clusters. Root and boot labels share one journal;
+   backup synchronization requires the complete original boot copy to match. */
+typedef struct {
+    TimestampRepair common;
+} LabelTextRepair;
+
+static int label_text_boot(LabelTextRepair *repair, const unsigned char *name)
+{
+    DtPlan *plan = repair->common.plan;
+    DtVolume *v = plan->volume;
+    unsigned field = v->bits == 32 ? 71 : 43;
+    unsigned char data[512], label[11];
+    DtPatch *patch;
+
+    if (v->boot[field - 5] != 0x29)
+        return 1;
+    memcpy(label, name, 11);
+    if (label[0] == 5)
+        label[0] = 0xe5;
+    if (v->bits == 32 && v->backup && v->backup != 0xffff) {
+        if (!dt_read(v, v->backup, data) || memcmp(data, v->boot, 512))
+            return fail(repair->common.err, "Repair the FAT32 backup before changing label text");
+        if (memcmp(data + field, label, 11)) {
+            patch = dt_plan_sector(plan, v->backup, repair->common.err);
+            if (!patch)
+                return 0;
+            memcpy(patch->after + field, label, 11);
+        }
+    }
+    if (memcmp(v->boot + field, label, 11)) {
+        patch = dt_plan_sector(plan, 0, repair->common.err);
+        if (!patch)
+            return 0;
+        memcpy(patch->after + field, label, 11);
+    }
+    return 1;
+}
+
+static int label_text_sector(LabelTextRepair *repair, dt_u32 sector, int root, int *end)
+{
+    TimestampRepair *common = &repair->common;
+    DtPlan *plan = common->plan;
+    unsigned char data[512];
+    unsigned offset, i;
+
+    if (common->progress &&
+        !common->progress(common->progress_ctx, "Check volume-label text", sector, plan->total))
+        return fail(common->err, "Label-text repair cancelled; no writes made");
+    if (!dt_read(plan->volume, sector, data))
+        return fail(common->err, "Cannot read volume-label text");
+    for (offset = 0; offset < 512; offset += 32) {
+        const unsigned char *entry = data + offset;
+        unsigned char name[11];
+        int invalid;
+        DtPatch *patch;
+
+        if (!entry[0]) {
+            *end = 1;
+            break;
+        }
+        if (entry[0] == 0xe5 || !(entry[11] & 8) || (entry[11] & 63) == 15)
+            continue;
+        if (!root || (entry[11] & 0xd0) || dt_word(entry + 26) ||
+            (plan->volume->bits == 32 && dt_word(entry + 20)) || dt_dword(entry + 28))
+            return fail(common->err, "Label text has ambiguous metadata; no bytes changed");
+        memcpy(name, entry, 11);
+        while ((invalid = dt_invalid_label_byte(name)) >= 0)
+            name[invalid] = '_';
+        if (!memcmp(name, entry, 11))
+            continue;
+        patch = dt_plan_sector(plan, sector, common->err);
+        if (!patch)
+            return 0;
+        memcpy(patch->after + offset, name, 11);
+        plan->cluster++;
+        if (common->report) {
+            char before[23], after[23], message[160];
+
+            for (i = 0; i < 11; i++) {
+                sprintf(before + i * 2, "%02X", entry[i]);
+                sprintf(after + i * 2, "%02X", name[i]);
+            }
+            sprintf(message,
+                    "Sector byte %u: raw_hex=%s -> %s; synchronize boot label",
+                    offset,
+                    before,
+                    after);
+            common->report(common->report_ctx, "LABEL_TEXT", plan->start + sector, message);
+        }
+        if (!label_text_boot(repair, name))
+            return 0;
+    }
+    return 1;
+}
+
+static int label_text_directory(void *ctx, const DtFile *file)
+{
+    LabelTextRepair *repair = (LabelTextRepair *)ctx;
+    DtVolume *v = repair->common.plan->volume;
+    dt_u32 cluster = file->start, n, sector;
+    unsigned i;
+    int end = 0;
+
+    if (!file->directory)
+        return 1;
+    for (n = 0; n < file->clusters && !end; n++) {
+        sector = v->data + (cluster - 2) * v->spc;
+        for (i = 0; i < v->spc && !end; i++)
+            if (!label_text_sector(repair, sector + i, file->directory == 2, &end))
+                return 0;
+        if (!end && n + 1 < file->clusters && !dt_fat(v, cluster, &cluster))
+            return fail(repair->common.err, "Cannot follow volume-label directory chain");
+    }
+    return 1;
+}
+
+static void label_text_result_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    if (!strcmp(code, "DIR_LABEL_NAME"))
+        *(int *)ctx = 1;
+    else
+        metadata_issue(ctx, code, where, message);
+}
+
+int dt_label_text_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                          DtProgress progress, void *ctx, char *err)
+{
+    LabelTextRepair repair;
+    DtResult result;
+    DtDisk disk;
+    DtVolume candidate;
+    dt_u32 sector;
+    int before = 0, traversal = 0, after = 0;
+    int end = 0;
+
+    dt_plan_clear(plan);
+    err[0] = 0;
+    v->cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(v, &result, metadata_issue, &before, progress, ctx) || before)
+        return fail(err, "Label-text repair requires readable, unambiguous directory ownership");
+    if (!dt_plan_init(plan, v, err))
+        return 0;
+    plan->kind = DT_REPAIR_LABEL_TEXT;
+    plan->mark_bad = (int)dt_oem_codepage();
+    memset(&repair, 0, sizeof(repair));
+    repair.common.plan = plan;
+    repair.common.report = report;
+    repair.common.report_ctx = report_ctx;
+    repair.common.progress = progress;
+    repair.common.progress_ctx = ctx;
+    repair.common.err = err;
+    if (v->bits != 32)
+        for (sector = 0; sector < v->rootsz && !end; sector++)
+            if (!label_text_sector(&repair, v->root + sector, 1, &end))
+                return 0;
+    if (!dt_scan_files(
+            v, &result, label_text_directory, &repair, metadata_issue, &traversal, progress, ctx) ||
+        traversal)
+        return fail(err, "Label directory scan failed or cancelled; no writes made");
+    memset(&disk, 0, sizeof(disk));
+    disk.ctx = plan;
+    disk.sectors = v->disk->sectors;
+    disk.read = header_preview_read;
+    candidate = *v;
+    candidate.disk = &disk;
+    if (!dt_read(&candidate, 0, candidate.boot))
+        return fail(err, "Cannot validate repaired boot label");
+    candidate.cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(&candidate, &result, label_text_result_issue, &after, progress, ctx) || after)
+        return fail(err, "Proposed label-text repair did not pass filesystem validation");
+    return 1;
+}
+
+int dt_label_text_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
+{
+    return dt_label_text_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
+}
+
+/* Extra dot records are redundant only when their type, size and pointer
+   identify this directory or its parent. Never discard a possible file. */
+typedef struct {
+    TimestampRepair common;
+} DotRepair;
+
+static void extra_dot_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    if (strcmp(code, "DIR_DOT_ROOT") && strcmp(code, "DIR_DOT_POSITION"))
+        metadata_issue(ctx, code, where, message);
+}
+
+static int extra_dot_sector(DotRepair *repair, dt_u32 sector, int root, dt_u32 self, dt_u32 parent,
+                            dt_u32 *position, int *end)
+{
+    TimestampRepair *common = &repair->common;
+    DtPlan *plan = common->plan;
+    unsigned char data[512];
+    unsigned offset;
+
+    if (common->progress &&
+        !common->progress(common->progress_ctx, "Check extra dot entries", sector, plan->total))
+        return fail(common->err, "Dot cleanup cancelled; no writes made");
+    if (!dt_read(plan->volume, sector, data))
+        return fail(common->err, "Cannot read dot-entry directory records");
+    for (offset = 0; offset < 512; offset += 32, (*position)++) {
+        const unsigned char *entry = data + offset;
+        int dot = !memcmp(entry, ".          ", 11);
+        int up = !memcmp(entry, "..         ", 11);
+        dt_u32 cluster;
+        DtPatch *patch;
+
+        if (!entry[0]) {
+            *end = 1;
+            break;
+        }
+        if ((!dot && !up) || (!root && *position < 2))
+            continue;
+        cluster = dt_word(entry + 26);
+        if (plan->volume->bits == 32)
+            cluster |= (dt_u32)dt_word(entry + 20) << 16;
+        if (!(entry[11] & 16) || (entry[11] & 0xc8) || dt_dword(entry + 28) ||
+            cluster != (up ? parent : self))
+            return fail(common->err, "Extra dot entry has ambiguous metadata; no records removed");
+        patch = dt_plan_sector(plan, sector, common->err);
+        if (!patch)
+            return 0;
+        patch->after[offset] = 0xe5;
+        plan->cluster++;
+        if (common->report) {
+            char message[160];
+
+            sprintf(message,
+                    "Remove extra %s at sector byte %u, directory slot %lu; "
+                    "cluster %lu; preserve leading dot pair and all file data",
+                    up ? ".." : ".",
+                    offset,
+                    (unsigned long)*position,
+                    (unsigned long)cluster);
+            common->report(common->report_ctx, "REMOVE_EXTRA_DOT", plan->start + sector, message);
+        }
+    }
+    return 1;
+}
+
+static int extra_dot_directory(void *ctx, const DtFile *file)
+{
+    DotRepair *repair = (DotRepair *)ctx;
+    DtVolume *v = repair->common.plan->volume;
+    dt_u32 cluster = file->start, n, sector;
+    unsigned i;
+    int end = 0;
+    dt_u32 position = 0;
+
+    if (!file->directory)
+        return 1;
+    for (n = 0; n < file->clusters && !end; n++) {
+        sector = v->data + (cluster - 2) * v->spc;
+        for (i = 0; i < v->spc && !end; i++)
+            if (!extra_dot_sector(repair,
+                                  sector + i,
+                                  file->directory == 2,
+                                  file->start,
+                                  file->parent,
+                                  &position,
+                                  &end))
+                return 0;
+        if (!end && n + 1 < file->clusters && !dt_fat(v, cluster, &cluster))
+            return fail(repair->common.err, "Cannot follow dot-entry directory chain");
+    }
+    return 1;
+}
+
+int dt_extra_dot_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err)
+{
+    DotRepair repair;
+    DtResult result;
+    DtDisk disk;
+    DtVolume candidate;
+    dt_u32 sector, position = 0;
+    int other_damage = 0, end = 0;
+
+    dt_plan_clear(plan);
+    err[0] = 0;
+    v->cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(v, &result, extra_dot_issue, &other_damage, progress, ctx) || other_damage)
+        return fail(err, "Dot cleanup requires readable, unambiguous directory ownership");
+    if (!dt_plan_init(plan, v, err))
+        return 0;
+    plan->kind = DT_REPAIR_EXTRA_DOTS;
+    memset(&repair, 0, sizeof(repair));
+    repair.common.plan = plan;
+    repair.common.report = report;
+    repair.common.report_ctx = report_ctx;
+    repair.common.progress = progress;
+    repair.common.progress_ctx = ctx;
+    repair.common.err = err;
+    if (v->bits != 32)
+        for (sector = 0; sector < v->rootsz && !end; sector++)
+            if (!extra_dot_sector(&repair, v->root + sector, 1, 0, 0, &position, &end))
+                return 0;
+    if (!dt_scan_files(v,
+                       &result,
+                       extra_dot_directory,
+                       &repair,
+                       extra_dot_issue,
+                       &other_damage,
+                       progress,
+                       ctx) ||
+        other_damage)
+        return fail(err, "Dot directory scan failed or cancelled; no writes made");
     memset(&disk, 0, sizeof(disk));
     disk.ctx = plan;
     disk.sectors = v->disk->sectors;
@@ -2055,11 +2521,218 @@ int dt_label_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ct
     other_damage = 0;
     if (!dt_scan_ex(&candidate, &result, metadata_issue, &other_damage, progress, ctx) ||
         other_damage)
-        return fail(err, "Proposed label repair did not pass filesystem validation");
+        return fail(err, "Proposed dot cleanup did not pass filesystem validation");
     return 1;
 }
 
-int dt_label_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
+int dt_extra_dot_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
 {
-    return dt_label_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
+    return dt_extra_dot_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
+}
+
+/* Reserved attribute bits do not describe ownership or normal DOS flags.
+   Preserve every defined bit, then validate the entire proposed filesystem. */
+typedef struct {
+    int other_damage;
+    dt_u32 invalid_names, root_dots, extra_dots, labels, conflicts;
+} AttributeGuard;
+
+static void attribute_result_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    AttributeGuard *guard = (AttributeGuard *)ctx;
+
+    if (!strcmp(code, "DIR_NAME")) {
+        guard->invalid_names++;
+        return;
+    }
+    if (!strcmp(code, "DIR_DOT_ROOT")) {
+        guard->root_dots++;
+        return;
+    }
+    if (!strcmp(code, "DIR_DOT_POSITION")) {
+        guard->extra_dots++;
+        return;
+    }
+    if (!strcmp(code, "DIR_LABEL")) {
+        guard->labels++;
+        return;
+    }
+    if (!strcmp(code, "DIR_DUPLICATE")) {
+        guard->conflicts++;
+        return;
+    }
+    metadata_issue(&guard->other_damage, code, where, message);
+}
+
+static void attribute_issue(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    if (strcmp(code, "DIR_ATTRIBUTE") && strcmp(code, "DIR_DOT_METADATA") &&
+        strcmp(code, "LFN_METADATA") && strcmp(code, "LFN_NAME"))
+        attribute_result_issue(ctx, code, where, message);
+}
+
+static int attribute_sector(TimestampRepair *repair, dt_u32 sector, int *end)
+{
+    DtPlan *plan = repair->plan;
+    unsigned char data[512];
+    unsigned offset;
+
+    if (repair->progress &&
+        !repair->progress(repair->progress_ctx, "Check reserved attributes", sector, plan->total))
+        return fail(repair->err, "Attribute repair cancelled; no writes made");
+    if (!dt_read(plan->volume, sector, data))
+        return fail(repair->err, "Cannot read attribute directory entries");
+    for (offset = 0; offset < 512; offset += 32) {
+        DtPatch *patch;
+        unsigned before, after;
+        char message[160];
+
+        if (!data[offset]) {
+            *end = 1;
+            break;
+        }
+        before = data[offset + 11];
+        if (data[offset] == 0xe5)
+            continue;
+        /* A label with data or directory ownership may be a mistyped file.
+           Validate every label, including records whose bits already are clear. */
+        if ((before & 8) && (before & 63) != 15 &&
+            ((before & 16) || dt_word(data + offset + 26) ||
+             (plan->volume->bits == 32 && dt_word(data + offset + 20)) ||
+             dt_dword(data + offset + 28)))
+            return fail(repair->err, "Volume label has ambiguous metadata; attributes unchanged");
+        if (!(before & 0xc0))
+            continue;
+        after = before & 0x3f;
+        patch = dt_plan_sector(plan, sector, repair->err);
+        if (!patch)
+            return 0;
+        patch->after[offset + 11] = (unsigned char)after;
+        plan->cluster++;
+        if (repair->report) {
+            sprintf(message,
+                    "Clear reserved attribute bits at sector byte %u: %02X -> %02X; "
+                    "preserve type, flags, names and data",
+                    offset + 11,
+                    before,
+                    after);
+            repair->report(
+                repair->report_ctx, "CLEAR_ATTRIBUTE_BITS", plan->start + sector, message);
+        }
+    }
+    return 1;
+}
+
+static int attribute_directory(void *ctx, const DtFile *file)
+{
+    TimestampRepair *repair = (TimestampRepair *)ctx;
+    DtVolume *v = repair->plan->volume;
+    dt_u32 cluster = file->start, n, sector;
+    unsigned i;
+    int end = 0;
+
+    if (!file->directory)
+        return 1;
+    for (n = 0; n < file->clusters && !end; n++) {
+        sector = v->data + (cluster - 2) * v->spc;
+        for (i = 0; i < v->spc && !end; i++)
+            if (!attribute_sector(repair, sector + i, &end))
+                return 0;
+        if (!end && n + 1 < file->clusters && !dt_fat(v, cluster, &cluster))
+            return fail(repair->err, "Cannot follow attribute directory chain");
+    }
+    return 1;
+}
+
+int dt_attribute_plan_ex(DtVolume *v, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err)
+{
+    TimestampRepair repair;
+    DtResult result;
+    DtDisk disk;
+    DtVolume candidate;
+    dt_u32 sector;
+    AttributeGuard before, traversal, after;
+    int end = 0;
+
+    memset(&before, 0, sizeof(before));
+    memset(&traversal, 0, sizeof(traversal));
+    memset(&after, 0, sizeof(after));
+    dt_plan_clear(plan);
+    err[0] = 0;
+    v->cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(v, &result, attribute_issue, &before, progress, ctx) || before.other_damage)
+        return fail(err, "Attribute repair requires readable, unambiguous directory ownership");
+    if (!dt_plan_init(plan, v, err))
+        return 0;
+    plan->kind = DT_REPAIR_ATTRIBUTES;
+    memset(&repair, 0, sizeof(repair));
+    repair.plan = plan;
+    repair.report = report;
+    repair.report_ctx = report_ctx;
+    repair.progress = progress;
+    repair.progress_ctx = ctx;
+    repair.err = err;
+    if (v->bits != 32)
+        for (sector = 0; sector < v->rootsz && !end; sector++)
+            if (!attribute_sector(&repair, v->root + sector, &end))
+                return 0;
+    if (!dt_scan_files(
+            v, &result, attribute_directory, &repair, attribute_issue, &traversal, progress, ctx) ||
+        traversal.other_damage)
+        return fail(err, "Attribute directory scan failed or cancelled; no writes made");
+    memset(&disk, 0, sizeof(disk));
+    disk.ctx = plan;
+    disk.sectors = v->disk->sectors;
+    disk.read = header_preview_read;
+    candidate = *v;
+    candidate.disk = &disk;
+    candidate.cache_sector = 0xffffffffUL;
+    if (!dt_scan_ex(&candidate, &result, attribute_result_issue, &after, progress, ctx) ||
+        after.other_damage || after.invalid_names != before.invalid_names ||
+        after.root_dots != before.root_dots || after.extra_dots != before.extra_dots ||
+        after.labels != before.labels || after.conflicts != before.conflicts)
+        return fail(err, "Proposed attribute repair did not pass filesystem validation");
+    /* Only byte 11 changes. Names, dot positions and label placement must
+       retain the same findings; their separate repairs can follow. */
+    if (report && after.invalid_names) {
+        char message[160];
+
+        sprintf(message,
+                "%lu invalid DOS aliases remain unchanged; run DOS alias repair next",
+                (unsigned long)after.invalid_names);
+        report(report_ctx, "FOLLOWUP_NAMES", v->start, message);
+    }
+    if (report && (after.root_dots || after.extra_dots)) {
+        char message[160];
+
+        sprintf(message,
+                "%lu root and %lu extra directory dot entries remain unchanged; "
+                "run extra-dot cleanup next",
+                (unsigned long)after.root_dots,
+                (unsigned long)after.extra_dots);
+        report(report_ctx, "FOLLOWUP_DOTS", v->start, message);
+    }
+    if (report && after.labels) {
+        char message[160];
+
+        sprintf(message,
+                "%lu volume-label findings remain unchanged; run volume-label repair next",
+                (unsigned long)after.labels);
+        report(report_ctx, "FOLLOWUP_LABELS", v->start, message);
+    }
+    if (report && after.conflicts) {
+        char message[160];
+
+        sprintf(message,
+                "%lu name-conflict findings remain unchanged; run name-conflict repair next",
+                (unsigned long)after.conflicts);
+        report(report_ctx, "FOLLOWUP_CONFLICTS", v->start, message);
+    }
+    return 1;
+}
+
+int dt_attribute_plan(DtVolume *v, DtPlan *plan, DtProgress progress, void *ctx, char *err)
+{
+    return dt_attribute_plan_ex(v, plan, NULL, NULL, progress, ctx, err);
 }

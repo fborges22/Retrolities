@@ -74,6 +74,8 @@ int dt_surface_ex(DtVolume *volume, dt_u32 first, dt_u32 count, DtMap *map, DtPr
 int dt_bios_devices(unsigned *drives, unsigned *count, char *err);
 int dt_bios_open(DtDisk *disk, unsigned drive, char *err);
 void dt_bios_close(DtDisk *disk);
+/* Enables only LBA zero, with the same unmounted-disk and durability checks. */
+int dt_bios_enable_mbr_write(DtDisk *disk, const char *journal, char *err);
 int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal, char *err);
 #ifdef MAGICDISK_BIOS_TEST_WRITES
 int dt_bios_test_writes(DtDisk *disk, dt_u32 first, dt_u32 count, int force_chs);
@@ -103,11 +105,36 @@ dt_u32 dt_dword(const unsigned char *bytes);
 
 /* The partition output array must hold 128 entries. All sector units are 512 bytes. */
 int dt_partitions(DtDisk *disk, DtPartition *partitions, unsigned *count, char *err);
+/* Search every sector in the requested range without using a partition table.
+   Candidates require valid BPB geometry and at least one reserved FAT header.
+   They may overlap or be stale; they are not partition-repair authority.
+   A backup-derived candidate may start before the searched range. The volume
+   pointer is valid only during the callback. Zero return means incomplete. */
+typedef int (*DtVolumeVisit)(void *, const DtVolume *);
+int dt_find_volumes(DtDisk *disk, dt_u32 first, dt_u32 count, DtVolumeVisit visit, void *visit_ctx,
+                    DtProgress progress, void *progress_ctx, char *err);
 int dt_mount(DtDisk *disk, dt_u32 start, dt_u32 limit, DtVolume *volume, char *err);
 int dt_mount_backup(DtDisk *disk, dt_u32 start, dt_u32 limit, unsigned source, DtVolume *volume,
                     char *err);
 int dt_read(DtVolume *volume, dt_u32 sector, unsigned char *buffer);
 int dt_fat(DtVolume *volume, dt_u32 cluster, dt_u32 *value);
+
+/* Read-only whole-disk preview for one missing primary MBR entry. Geometry
+   is supplied explicitly, not guessed from the candidate BPB. Callers must
+   use this result only when the builder succeeds; no apply API exists yet. */
+typedef struct {
+    DtDisk *disk;
+    dt_u32 disk_sectors, start, total;
+    unsigned slot, boot_source, heads, sectors, bits;
+    unsigned char before[512], after[512], volume_boot[512];
+} DtMbrPlan;
+
+int dt_mbr_plan(DtDisk *disk, unsigned slot, dt_u32 start, unsigned boot_source, unsigned heads,
+                unsigned sectors, DtMbrPlan *plan, char *err);
+/* Recompute and compare a reviewed preview before creating its journal. */
+int dt_mbr_revalidate(const DtMbrPlan *plan, char *err);
+int dt_mbr_apply(const DtMbrPlan *plan, const char *journal, char *err);
+int dt_mbr_restore(DtDisk *disk, const char *journal, int allow_torn, char *err);
 
 /* A progress callback returns zero to cancel; cancelled scans are never complete. */
 int dt_scan_ex(DtVolume *volume, DtResult *result, DtReport report, void *report_ctx,
@@ -165,7 +192,11 @@ enum {
     DT_REPAIR_SALVAGE,
     DT_REPAIR_LFN,
     DT_REPAIR_ALIASES,
-    DT_REPAIR_LABELS
+    DT_REPAIR_LABELS,
+    DT_REPAIR_CONFLICTS,
+    DT_REPAIR_ATTRIBUTES,
+    DT_REPAIR_EXTRA_DOTS,
+    DT_REPAIR_LABEL_TEXT
 };
 
 typedef struct {
@@ -206,20 +237,38 @@ int dt_plan_init(DtPlan *plan, DtVolume *volume, char *err);
 DtPatch *dt_plan_sector(DtPlan *plan, dt_u32 sector, char *err);
 int dt_plan_set_fat(DtPlan *plan, dt_u32 cluster, dt_u32 value, unsigned copy, char *err);
 /* Field offsets are 13, 14, 16, 18, 22 and 24 in a short directory entry. */
+int dt_label_text_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                          DtProgress progress, void *ctx, char *err);
+int dt_label_text_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+int dt_extra_dot_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err);
+int dt_extra_dot_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+int dt_attribute_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err);
+int dt_attribute_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_label_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
                      DtProgress progress, void *ctx, char *err);
 int dt_label_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 /* 1 available, 0 collision, -1 unreadable/malformed/cancelled. Directory zero
    means the root; skip_sector is volume-relative. Does not prove ownership. */
+int dt_entry_name_conflicts(DtVolume *volume, dt_u32 directory_start, const unsigned char *entry,
+                            const unsigned char *lfn, unsigned count, dt_u32 sector,
+                            unsigned offset, DtProgress progress, void *ctx);
 int dt_directory_name_available(DtVolume *volume, dt_u32 directory_start, const char *candidate,
                                 dt_u32 skip_sector, unsigned skip_offset, DtProgress progress,
                                 void *ctx);
 /* First invalid alias byte, or -1 when no violation is proven under the OEM policy. */
+int dt_invalid_label_byte(const unsigned char *entry);
 int dt_invalid_alias_byte(const unsigned char *entry);
+int dt_conflict_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                        DtProgress progress, void *ctx, char *err);
+int dt_conflict_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_alias_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
                      DtProgress progress, void *ctx, char *err);
 int dt_alias_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 /* Validate one complete on-disk LFN group against its following alias. */
+int dt_lfn_text(const unsigned char *entries, unsigned count, const unsigned char *alias, char *out,
+                size_t capacity);
 int dt_lfn_valid(const unsigned char *entries, unsigned count, const unsigned char *alias);
 int dt_lfn_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
                    DtProgress progress, void *ctx, char *err);

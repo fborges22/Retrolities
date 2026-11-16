@@ -633,3 +633,107 @@ int dt_fat(DtVolume *v, dt_u32 c, dt_u32 *out)
     *out = value;
     return 1;
 }
+
+/* A BPB alone may be a file payload or a stale boot copy. Require a matching
+   reserved FAT header in at least one declared copy before presenting it as
+   a candidate. This is evidence for inspection, never authority to write MBRs. */
+static int candidate_fat(DtVolume *volume)
+{
+    DtVolume copy = *volume;
+    dt_u32 first, second, expected;
+    unsigned index, media = volume->boot[21];
+
+    if (media != 0xf0 && media < 0xf8)
+        return 0;
+    expected = (volume->bits == 12   ? 0xf00UL
+                : volume->bits == 16 ? 0xff00UL
+                                     : 0x0fffff00UL) |
+               media;
+    for (index = 0; index < volume->copies; index++) {
+        copy.active = index;
+        copy.cache_sector = 0xffffffffUL;
+        if (!dt_fat(&copy, 0, &first) || !dt_fat(&copy, 1, &second))
+            continue;
+        if (first == expected && (volume->bits == 12   ? second >= 0xff8UL
+                                  : volume->bits == 16 ? (second & 0x3fffUL) == 0x3fffUL
+                                                       : (second & 0x03ffffffUL) == 0x03ffffffUL))
+            return 1;
+    }
+    return 0;
+}
+
+typedef struct {
+    DtDisk *source;
+    int unreadable;
+} VolumeSearchRead;
+
+static int volume_search_read(void *ctx, dt_u32 sector, unsigned char *data)
+{
+    VolumeSearchRead *read = (VolumeSearchRead *)ctx;
+
+    if (read->source->read(read->source->ctx, sector, data))
+        return 1;
+    read->unreadable = 1;
+    return 0;
+}
+
+int dt_find_volumes(DtDisk *disk, dt_u32 first, dt_u32 count, DtVolumeVisit visit, void *visit_ctx,
+                    DtProgress progress, void *progress_ctx, char *err)
+{
+    unsigned char data[512];
+    DtVolume volume, primary;
+    dt_u32 offset, sector, start;
+    unsigned backup;
+    VolumeSearchRead reader;
+    DtDisk search_disk;
+    char detail[160];
+
+    err[0] = 0;
+    if (!disk || !disk->read || !visit || !count || first >= disk->sectors ||
+        count > disk->sectors - first)
+        return fail(err, "Invalid volume-search range or callback");
+    memset(&search_disk, 0, sizeof(search_disk));
+    reader.source = disk;
+    reader.unreadable = 0;
+    search_disk.ctx = &reader;
+    search_disk.sectors = disk->sectors;
+    search_disk.read = volume_search_read;
+    for (offset = 0; offset < count; offset++) {
+        sector = first + offset;
+        if (!(offset & 127) && progress &&
+            !progress(progress_ctx, "Search for FAT volumes", offset, count))
+            return fail(err, "Volume search cancelled; results are incomplete");
+        if (!search_disk.read(search_disk.ctx, sector, data))
+            continue;
+        if (dt_word(data + 510) != 0xaa55 || dt_word(data + 11) != 512)
+            continue;
+        if (dt_mount(&search_disk, sector, disk->sectors - sector, &volume, detail) &&
+            candidate_fat(&volume)) {
+            volume.disk = disk;
+            if (!visit(visit_ctx, &volume))
+                return fail(err, "Volume search stopped by visitor; results are incomplete");
+            continue;
+        }
+        /* A FAT32 backup declares its distance from the volume start. Use it
+           only when the inferred primary cannot mount. The caller sees the
+           backup source explicitly and must keep this candidate read-only. */
+        backup = dt_word(data + 50);
+        if (dt_word(data + 17) || dt_word(data + 22) || !backup || backup == 0xffff ||
+            backup > sector)
+            continue;
+        start = sector - backup;
+        if (dt_mount(&search_disk, start, disk->sectors - start, &primary, detail))
+            continue;
+        if (dt_mount_backup(&search_disk, start, disk->sectors - start, backup, &volume, detail) &&
+            candidate_fat(&volume)) {
+            volume.disk = disk;
+            if (!visit(visit_ctx, &volume))
+                return fail(err, "Volume search stopped by visitor; results are incomplete");
+        }
+    }
+    if (progress && !progress(progress_ctx, "Search for FAT volumes", count, count))
+        return fail(err, "Volume search cancelled; results are incomplete");
+    if (reader.unreadable)
+        return fail(err, "Unreadable sectors skipped; volume-search results are incomplete");
+    return 1;
+}

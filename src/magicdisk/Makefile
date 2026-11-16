@@ -4,7 +4,7 @@ OBJ := $(ROOT)/build/dos/obj/magicdisk
 WATCOM ?= /opt/watcom
 WCC := $(WATCOM)/binl64/wcc386
 WLINK := $(WATCOM)/binl64/wlink
-SOURCES := main.c disk.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c ui.c
+SOURCES := main.c disk.c partition.c mbrjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c ui.c
 OBJECTS := $(SOURCES:%.c=$(OBJ)/%.obj)
 .PHONY: dos host test test-dos
 dos: $(OUT)
@@ -18,12 +18,18 @@ $(OUT): $(OBJECTS) | $(dir $(OUT))
 host:
 	mkdir -p $(ROOT)/build/host
 	$(CC) -std=c99 -Wall -Wextra -Werror -g $(SOURCES) -o $(ROOT)/build/host/magicdisk
-test: host
+test: host test-mbr
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/volume_search_probe.c disk.c -o $(ROOT)/build/host/volume-search-probe
+	python3 tests/test_volume_search.py $(ROOT)/build/host/volume-search-probe
+	python3 tests/test_volume_search_cli.py $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_volume_search_bounds.c disk.c -o $(ROOT)/build/host/volume-search-bounds
+	$(ROOT)/build/host/volume-search-bounds
 	python3 tests/test_cli_numbers.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_oem_names.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_oem_extended.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_short_names.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_labels.py $(ROOT)/build/host/magicdisk
+	python3 tests/test_label_controls.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_salvage.py $(ROOT)/build/host/magicdisk
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_image_io.c disk.c -o $(ROOT)/build/host/magicdisk-image-io-test
 	python3 tests/test_image_io.py $(ROOT)/build/host/magicdisk-image-io-test
@@ -109,6 +115,24 @@ test: host
 	python3 tests/test_lfn_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-timestamp-test
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_alias_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-alias-test
 	python3 tests/test_alias_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-alias-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-label-test
+	python3 tests/test_label_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_text_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-label-text-test
+	python3 tests/test_label_text.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-text-test
+	python3 tests/test_metadata_sequence.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_extra_dots_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-extra-dots-test
+	python3 tests/test_extra_dots.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-extra-dots-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_attribute_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-attribute-test
+	python3 tests/test_attribute_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
+	python3 tests/test_attribute_alias_sequence.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
+	python3 tests/test_attribute_followups.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
+	python3 tests/test_dot_attribute_sequence.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_conflict_query.c disk.c scan.c -o $(ROOT)/build/host/magicdisk-conflict-query-test
+	python3 tests/test_conflict_query.py $(ROOT)/build/host/magicdisk-conflict-query-test
+	python3 tests/test_conflict_repair.py $(ROOT)/build/host/magicdisk
+	python3 tests/test_conflict_edges.py $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_conflict_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-conflict-fault-test
+	python3 tests/test_conflict_faults.py $(ROOT)/build/host/magicdisk-conflict-fault-test
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_text.c text.c -o $(ROOT)/build/host/magicdisk-text-test
 	$(ROOT)/build/host/magicdisk-text-test
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_fsinfo_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-fsinfo-test
@@ -126,6 +150,10 @@ $(ROOT)/build/dos/bin/LOCKTEST.EXE: tests/lockprobe.c | $(OBJ) $(dir $(OUT))
 $(ROOT)/build/dos/bin/IMAGEIO.EXE: tests/test_image_io.c disk.h $(OBJ)/disk.obj | $(OBJ) $(dir $(OUT))
 	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/image-io.obj $<
 	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=16k file $(OBJ)/image-io.obj file $(OBJ)/disk.obj
+
+$(ROOT)/build/dos/bin/VSBOUND.EXE: tests/test_volume_search_bounds.c disk.h $(OBJ)/disk.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/volume-search-bounds.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/volume-search-bounds.obj file $(OBJ)/disk.obj
 
 $(ROOT)/build/dos/bin/FATBOUND.EXE: tests/test_plan_bounds.c disk.h $(OBJ)/disk.obj $(OBJ)/scan.obj $(OBJ)/bad.obj $(OBJ)/repair.obj $(OBJ)/journal.obj | $(OBJ) $(dir $(OUT))
 	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/plan-bounds.obj $<
@@ -251,6 +279,7 @@ test-salvage: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE
 test-labels: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE
 	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL (msdos622, freedos or win98)'; exit 1)
 	python3 tests/test_labels_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_label_controls_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 
 .PHONY: test-image-io
 test-image-io: dos $(ROOT)/build/dos/bin/IMAGEIO.EXE
@@ -317,7 +346,7 @@ test-bios-cache: dos $(ROOT)/build/dos/bin/BIOSCHK.EXE
 	python3 tests/test_dos_map.py $(OUT) "$(DOS_BOOT)" --repair-refusals --kernel msdos622 --preflight $(ROOT)/build/dos/bin/BIOSCHK.EXE --smartdrv "$(DOS_SMARTDRV)" --himem "$(DOS_HIMEM)" --write-behind
 
 .PHONY: test-compat
-test-compat: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/dos/bin/IMAGEIO.EXE $(ROOT)/build/dos/bin/FATBOUND.EXE $(ROOT)/build/dos/bin/MAPTEST.EXE $(ROOT)/build/dos/bin/BIOSCHK.EXE $(ROOT)/build/dos/bin/BIOSJNL.EXE $(ROOT)/build/dos/bin/BIOSWRT.EXE $(ROOT)/build/dos/bin/FILECOPY.EXE $(ROOT)/build/dos/bin/RECFAULT.EXE $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/FREESPC.EXE $(ROOT)/build/dos/bin/SECTGET.EXE
+test-compat: host dos package $(ROOT)/build/dos/bin/VSBOUND.EXE $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/dos/bin/IMAGEIO.EXE $(ROOT)/build/dos/bin/FATBOUND.EXE $(ROOT)/build/dos/bin/MAPTEST.EXE $(ROOT)/build/dos/bin/BIOSCHK.EXE $(ROOT)/build/dos/bin/BIOSJNL.EXE $(ROOT)/build/dos/bin/BIOSWRT.EXE $(ROOT)/build/dos/bin/FILECOPY.EXE $(ROOT)/build/dos/bin/RECFAULT.EXE $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/FREESPC.EXE $(ROOT)/build/dos/bin/SECTGET.EXE
 	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL (msdos622 or freedos)'; exit 1)
 	python3 tests/test_dos_compat.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --relocate-native --retry-faults --timestamps --deleted-recovery
 	python3 tests/test_dos_compat.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --deleted-directories
@@ -330,6 +359,19 @@ test-compat: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/d
 	python3 tests/test_orphan_directories_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_lfn_repair_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_alias_repair_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_label_repair_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_volume_search_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --ui --bounds $(ROOT)/build/dos/bin/VSBOUND.EXE
+	python3 tests/test_volume_search_display.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --captures $(ROOT)/build/magicdisk-test/discovery-display/$(DOS_KERNEL)
+	python3 tests/test_label_text_mounted_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_label_text_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_metadata_sequence_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_extra_dots_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_attribute_repair_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_attribute_alias_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_attribute_followups_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --kind conflicts
+	python3 tests/test_attribute_followups_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --kind labels
+	python3 tests/test_dot_attribute_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_conflict_repair_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_alias_mounted_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_menu_layout_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_directory_gaps_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
@@ -337,6 +379,7 @@ test-compat: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/d
 	python3 tests/test_salvage_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_salvage_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --torn-undo
 	python3 tests/test_labels_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_label_controls_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_fat_headers_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
 	python3 tests/test_package_dos.py $(ROOT)/build/dos/dist/MAGICDSK.ZIP "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)" --keyplay $(ROOT)/build/dos/bin/KEYPLAY.EXE
 	python3 tests/test_map_dos.py $(ROOT)/build/dos/bin/MAPTEST.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
@@ -381,7 +424,7 @@ test-compat: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/d
 
 # Both names run the same QEMU suite; a user-owned DOS boot disk is required.
 .PHONY: test-win98
-test-dos test-win98: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/dos/bin/IMAGEIO.EXE $(ROOT)/build/dos/bin/FATBOUND.EXE $(ROOT)/build/dos/bin/MAPTEST.EXE $(ROOT)/build/dos/bin/BIOSCHK.EXE $(ROOT)/build/dos/bin/BIOSJNL.EXE $(ROOT)/build/dos/bin/BIOSWRT.EXE $(ROOT)/build/dos/bin/FILECOPY.EXE $(ROOT)/build/dos/bin/RECFAULT.EXE \
+test-dos test-win98: host dos package $(ROOT)/build/dos/bin/VSBOUND.EXE $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)/build/dos/bin/IMAGEIO.EXE $(ROOT)/build/dos/bin/FATBOUND.EXE $(ROOT)/build/dos/bin/MAPTEST.EXE $(ROOT)/build/dos/bin/BIOSCHK.EXE $(ROOT)/build/dos/bin/BIOSJNL.EXE $(ROOT)/build/dos/bin/BIOSWRT.EXE $(ROOT)/build/dos/bin/FILECOPY.EXE $(ROOT)/build/dos/bin/RECFAULT.EXE \
                     $(ROOT)/build/dos/bin/KEYPLAY.EXE \
                     $(ROOT)/build/dos/bin/LOCKTEST.EXE \
                     $(ROOT)/build/dos/bin/SECTGET.EXE \
@@ -424,6 +467,19 @@ test-dos test-win98: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)
 	python3 tests/test_orphan_directories_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_lfn_repair_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_alias_repair_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_label_repair_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_volume_search_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --ui --bounds $(ROOT)/build/dos/bin/VSBOUND.EXE
+	python3 tests/test_volume_search_display.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --captures $(ROOT)/build/magicdisk-test/discovery-display/win98
+	python3 tests/test_label_text_mounted_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_label_text_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_metadata_sequence_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_extra_dots_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_attribute_repair_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_attribute_alias_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_attribute_followups_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --kind conflicts
+	python3 tests/test_attribute_followups_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --kind labels
+	python3 tests/test_dot_attribute_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_conflict_repair_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_alias_mounted_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_menu_layout_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_directory_gaps_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
@@ -431,6 +487,7 @@ test-dos test-win98: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)
 	python3 tests/test_salvage_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_salvage_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --torn-undo
 	python3 tests/test_labels_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
+	python3 tests/test_label_controls_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_fat_headers_dos.py $(OUT) "$(WIN98_BOOT)" --kernel win98
 	python3 tests/test_package_dos.py $(ROOT)/build/dos/dist/MAGICDSK.ZIP "$(WIN98_BOOT)" --kernel win98 --keyplay $(ROOT)/build/dos/bin/KEYPLAY.EXE
 	python3 tests/test_image_io_dos.py $(ROOT)/build/dos/bin/IMAGEIO.EXE "$(WIN98_BOOT)" --kernel win98
@@ -456,3 +513,33 @@ test-dos test-win98: host dos package $(ROOT)/build/dos/bin/RELOCFLT.EXE $(ROOT)
 	python3 tests/test_dos_compat.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --relocate-directory --mounted-bits 32
 	python3 tests/test_dos_compat.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --relocate-root --mounted-bits 32
 	python3 tests/test_dos_compat.py $(OUT) "$(WIN98_BOOT)" --kernel win98 --relocate-root --mounted-bits 32 --relocate-torn-undo
+
+$(ROOT)/build/dos/bin/MBRPLAN.EXE: tests/mbr_plan_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/mbr-plan-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/mbr-plan-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+$(ROOT)/build/dos/bin/MBRTXN.EXE: tests/mbr_txn_probe.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/mbrjournal.obj $(OBJ)/bios.obj $(OBJ)/dosraw.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/mbr-txn-probe.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/mbr-txn-probe.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/mbrjournal.obj file $(OBJ)/bios.obj file $(OBJ)/dosraw.obj
+
+.PHONY: test-mbr
+test-mbr: host
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/mbr_plan_probe.c disk.c partition.c bios.c dosraw.c -o $(ROOT)/build/host/mbr-plan-probe
+	python3 tests/test_mbr_plan.py $(ROOT)/build/host/mbr-plan-probe $(ROOT)/build/host/magicdisk
+	python3 tests/test_mbr_cli.py $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_mbr_plan_faults.c disk.c partition.c -o $(ROOT)/build/host/mbr-faults
+	$(ROOT)/build/host/mbr-faults
+	$(CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_mbr_journal.c disk.c partition.c mbrjournal.c -o $(ROOT)/build/host/mbr-journal-test
+	$(ROOT)/build/host/mbr-journal-test $(ROOT)/build/host/mbr-test.mdj
+
+$(ROOT)/build/dos/bin/MBRJCHK.EXE: tests/test_mbr_journal.c disk.h $(OBJ)/disk.obj $(OBJ)/partition.obj $(OBJ)/mbrjournal.obj | $(OBJ) $(dir $(OUT))
+	$(WCC) -zq -bt=dos -mf -3r -os -w4 -i=. -i=$(WATCOM)/h -fo=$(OBJ)/mbr-journal-test.obj $<
+	$(WLINK) option quiet format os2 le option stub=$(WATCOM)/binw/dos32a.exe libpath $(WATCOM)/lib386 libpath $(WATCOM)/lib386/dos name $@ option stack=64k file $(OBJ)/mbr-journal-test.obj file $(OBJ)/disk.obj file $(OBJ)/partition.obj file $(OBJ)/mbrjournal.obj
+
+.PHONY: test-mbr-dos
+test-mbr-dos: dos $(ROOT)/build/dos/bin/KEYPLAY.EXE $(ROOT)/build/dos/bin/MBRJCHK.EXE
+	@test -n "$(DOS_BOOT)" -a -n "$(DOS_KERNEL)" || (echo 'Set DOS_BOOT and DOS_KERNEL'; exit 1)
+	python3 tests/test_mbr_cli_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_mbr_ui_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_mbr_reboot_dos.py $(OUT) "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"
+	python3 tests/test_mbr_faults_dos.py $(ROOT)/build/dos/bin/MBRJCHK.EXE "$(DOS_BOOT)" --kernel "$(DOS_KERNEL)"

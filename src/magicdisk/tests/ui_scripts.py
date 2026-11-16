@@ -59,6 +59,11 @@ fsinfo_keys = (diagnose() + step('Filesystem check', 'up', True) +
                step('Clear invalid timestamps', 'up', True) +
                step('Clear invalid long names', 'up', True) +
                step('Repair invalid DOS names', 'up', True) +
+        step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
                step('Rebuild FAT32 FSInfo', 'enter', True) + step('REVIEW FSINFO REPAIR', 'enter') +
                typing('TYPE REBUILD TO REPAIR FSINFO', 'REBUILD') +
                typing('NEW JOURNAL FILE ON A SEPARATE DISK', 'FSUI.MDJ') +
@@ -74,6 +79,11 @@ boot_keys = (diagnose() + step('Filesystem check', 'up', True) +
              step('Clear invalid timestamps', 'up', True) +
              step('Clear invalid long names', 'up', True) +
              step('Repair invalid DOS names', 'up', True) +
+        step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
              step('Rebuild FAT32 FSInfo', 'up', True) +
              step('Rebuild backup boot', 'enter', True) +
              step('REVIEW BACKUP BOOT REPAIR', 'enter') +
@@ -94,6 +104,11 @@ mirror_keys = (diagnose() + step('Filesystem check', 'up', True) +
                step('Clear invalid timestamps', 'up', True) +
                step('Clear invalid long names', 'up', True) +
                step('Repair invalid DOS names', 'up', True) +
+        step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
                step('Rebuild FAT32 FSInfo', 'up', True) +
                step('Rebuild backup boot', 'up', True) +
                step('Rebuild FAT copies', 'enter', True) +
@@ -112,8 +127,14 @@ mounted_recovery_keys = (
     typing('OPEN DOS VOLUME (DRIVE LETTER)', 'D') + diagnose() +
     step('Filesystem check', 'up', True) +
     step('Clear invalid timestamps', 'up', True) +
-    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Clear invalid long names', 'up', True) +
     step('Repair invalid DOS names', 'up', True) +
+    step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
+    step('Rebuild FAT32 FSInfo', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
     step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'enter', True) + step('RECOVER LOST CHAINS', 'enter') +
@@ -127,8 +148,14 @@ mounted_reclaim_keys = (
     typing('OPEN DOS VOLUME (DRIVE LETTER)', 'D') + diagnose() +
     step('Filesystem check', 'up', True) +
     step('Clear invalid timestamps', 'up', True) +
-    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Clear invalid long names', 'up', True) +
     step('Repair invalid DOS names', 'up', True) +
+    step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
+    step('Rebuild FAT32 FSInfo', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
     step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'up', True) + step('Reclaim lost allocation...', 'enter', True) +
@@ -140,8 +167,14 @@ mounted_reclaim_keys = (
 chain_menu = (
     step('Filesystem check', 'up', True) +
     step('Clear invalid timestamps', 'up', True) +
-    step('Clear invalid long names', 'up', True) + step('Rebuild FAT32 FSInfo', 'up', True) +
+    step('Clear invalid long names', 'up', True) +
     step('Repair invalid DOS names', 'up', True) +
+    step('Repair volume labels', 'up', True) +
+        step('Repair volume label text', 'up', True) +
+        step('Repair name conflicts', 'up', True) +
+        step('Repair reserved attributes', 'up', True) +
+        step('Remove extra dot entries', 'up', True) +
+    step('Rebuild FAT32 FSInfo', 'up', True) +
     step('Rebuild backup boot', 'up', True) + step('Rebuild FAT copies', 'up', True) +
     step('Rebuild FAT headers', 'up', True) +
     step('Recover lost chains...', 'up', True) + step('Reclaim lost allocation...', 'up', True) +

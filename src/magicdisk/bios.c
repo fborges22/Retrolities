@@ -331,12 +331,14 @@ static int bios_journal_sync(void *ctx, const char *path)
     return ok;
 }
 
-int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal, char *err)
+static int enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal,
+                         int mbr_only, char *err)
 {
     BiosDisk *b = (BiosDisk *)disk->ctx;
 
-    if (!b || disk->read != bios_read || disk->write || !journal || !*journal || !first || !count ||
-        first >= b->sectors || count > b->sectors - first) {
+    if (!b || disk->read != bios_read || disk->write || !journal || !*journal ||
+        (!first && !mbr_only) || !count || first >= b->sectors || count > b->sectors - first ||
+        (mbr_only && (first || count != 1))) {
         strcpy(err, "BIOS writes require a bounded, nonzero partition range");
         return 0;
     }
@@ -352,6 +354,16 @@ int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *
     disk->sync = bios_sync;
     disk->sync_journal = bios_journal_sync;
     return 1;
+}
+
+int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal, char *err)
+{
+    return enable_writes(disk, first, count, journal, 0, err);
+}
+
+int dt_bios_enable_mbr_write(DtDisk *disk, const char *journal, char *err)
+{
+    return enable_writes(disk, 0, 1, journal, 1, err);
 }
 
 #ifdef MAGICDISK_BIOS_TEST_WRITES
@@ -502,6 +514,14 @@ unavailable:
     return 0;
 }
 #else
+int dt_bios_enable_mbr_write(DtDisk *disk, const char *journal, char *err)
+{
+    (void)disk;
+    (void)journal;
+    strcpy(err, "BIOS writes require the DOS executable");
+    return 0;
+}
+
 int dt_bios_enable_writes(DtDisk *disk, dt_u32 first, dt_u32 count, const char *journal, char *err)
 {
     (void)disk;
