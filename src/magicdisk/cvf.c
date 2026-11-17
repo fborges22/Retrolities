@@ -322,12 +322,24 @@ int dt_cvf_check(const char *path, DtCvfResult *result, DtReport report, void *r
                     break;
                 if (e[0] == 0xe5 || (e[11] & 0x3f) == 0x0f || (e[11] & 8) || e[0] == '.')
                     continue;
-                sprintf(name, "%.8s.%.3s", (char *)e, (char *)e + 8);
+                {
+                    unsigned n = 0, j;
+
+                    for (j = 0; j < 8 && e[j] != ' '; j++)
+                        name[n++] = (char)(e[j] >= 32 && e[j] < 127 ? e[j] : '?');
+                    if (e[8] != ' ')
+                        name[n++] = '.';
+                    for (j = 8; j < 11 && e[j] != ' '; j++)
+                        name[n++] = (char)(e[j] >= 32 && e[j] < 127 ? e[j] : '?');
+                    name[n] = 0;
+                }
                 start = dt_word(e + 26);
                 size = dt_dword(e + 28);
                 if (e[11] & 0x10) {
                     result->dirs++;
-                    if (start >= 2 && start < clusters + 2) {
+                    /* Never re-enter a visited cluster: damaged trees may loop. */
+                    if (start >= 2 && start < clusters + 2 &&
+                        !(owned[start / 8] & (1u << (start % 8)))) {
                         if (tail == capacity) {
                             Pending *grown = (Pending *)realloc(queue,
                                                                 capacity * 2 * sizeof(Pending));

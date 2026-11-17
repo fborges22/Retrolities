@@ -13,9 +13,10 @@ recovery — and adds what neither offered: every write is planned, previewed,
 journaled to separate storage, verified, rolled back on failure and undoable
 later, even after an interrupted write. Repairs work on disk images, mounted
 MS-DOS 6.22/7.1 and FreeDOS volumes, and unmounted IDE partitions via the BIOS.
-Not covered: DoubleSpace/DriveSpace/Stacker compressed volume files (ScanDisk
-and NDD check these). GPT and sector sizes other than 512 bytes are also
-unsupported; neither DOS-era tool handled them either.
+Limits compared with the originals: directories stored compressed inside
+DoubleSpace/DriveSpace volumes are not expanded (MagicDisk never decompresses),
+and Stacker volumes are not recognized. GPT and sector sizes other than 512 bytes are unsupported; neither
+DOS-era tool handled them either.
 
 | Capability | ScanDisk | Norton Disk Doctor | MagicDisk |
 |---|---|---|---|
@@ -28,6 +29,7 @@ unsupported; neither DOS-era tool handled them either.
 | Undo | Undo disk for the last run | Undo file for the last run | Per-step verified journals, exact undo, interrupted-write recovery |
 | Partition table and boot record | Boot sector only | Yes | MBR/EBR/extended-container reconstruction, lost-volume search, FAT32 boot and backup recovery |
 | Data rescue before repair | No | No | Live-file, lost-chain, orphan-directory and deleted-file export to another disk |
+| DoubleSpace/DriveSpace volumes | Check and repair | Check and repair | `--cvf FILE [--repair]` / **Fix > Check compressed volume**: MDBPB, stamps, MDFAT vs FAT, heap cross-links (data copied), tags, BitFAT, inner chains, sizes, cross-linked files and lost chains; journaled with exact undo |
 | CMOS setup check | No | Yes | `--cmos` / **Fix > CMOS check**: battery, POST status, checksum, clock/calendar, floppy and memory agreement; read-only |
 | Long filenames and code pages | Windows 95 version | Later versions | VFAT with UTF-8 reports; CP437/850/852/860/866 aliases |
 
@@ -267,6 +269,75 @@ Fix menu adds `--surface`; the TUI never salvages automatically.
 If a write test is interrupted (power loss), at most one free sector can be
 left inverted; it belongs to no file. Free-space contents are otherwise
 restored byte-for-byte, so deleted-file recovery remains possible.
+
+## Compressed volumes (DoubleSpace/DriveSpace)
+
+`MAGICDSK --cvf H:\DBLSPACE.000` (TUI **Fix > Check compressed volume**)
+checks an MS-DOS 6.x compressed volume file through the host drive, reading it
+as an ordinary file; checking never writes. It recognizes `MSDBL6.0` (DoubleSpace)
+and `MSDSP6.0` (DriveSpace) MDBPBs and reports:
+
+- `CVF_STAMP` / `CVF_LAYOUT`: a missing `F8 44 52 00` MdStamp1 after the inner
+  boot sector or `MDR0` MdStamp2 in the last complete sector; MDFAT, root or
+  sector-heap positions that disagree with the MDBPB. The checker accepts
+  either sector-numbering convention between the documentation's "logical"
+  and file sectors, using the stamps to decide.
+- `CVF_MDFAT`, `CVF_MDFAT_STALE`: clusters allocated in the FAT but unused in
+  the MDFAT, free clusters still holding heap sectors, and the reserved bit.
+  All-zero entries ("infinitely compressible" clusters) are valid.
+- `CVF_HEAP_RANGE`, `CVF_HEAP_CROSSLINK`, `CVF_UNREADABLE`, `CVF_TAG`: data
+  outside the sector heap, heap sectors shared by two clusters, unreadable
+  heap sectors, and compressed clusters without their `MD 00 0x` tag.
+- `CVF_BITFAT`: BitFAT bits that disagree with the MDFAT. This is a note,
+  not an error, because DoubleSpace rebuilds the BitFAT at every mount.
+- `CVF_FAT_HEADER`, `CVF_CHAIN`, `CVF_CROSSLINK`, `CVF_FILE_SIZE`, `CVF_LOST`:
+  the inner FAT filesystem, traversed from the root through raw or sparse
+  subdirectories with 8 KB clusters. Directory loops are reported, not
+  followed.
+
+Directories stored compressed are not decompressed, so the result is then
+`PARTIAL` (`CVF_PARTIAL`, exit 2) and lost-cluster analysis is skipped. Exit
+status is 0 for a clean complete check, 1 with findings, 2 when the file is
+not a CVF or the check is partial.
+
+### Repair a compressed volume
+
+```
+MAGICDSK --cvf H:\DBLSPACE.000 --repair
+MAGICDSK --cvf H:\DBLSPACE.000 --repair --apply --journal A:\CVF.MDJ
+MAGICDSK --cvf H:\DBLSPACE.000 --restore-journal A:\CVF.MDJ --apply
+```
+
+In the TUI, findings from **Fix > Check compressed volume** lead to a repair
+review; type **REPAIR** and give a new journal file on another disk. Unmount
+the CVF first (`DBLSPACE /UNMOUNT`) and clear its read-only, system and hidden
+attributes; an open or protected file is refused. Repairs rewrite only
+bookkeeping, and compressed data is copied byte-for-byte, never recompressed:
+
+- rebuild the inner FAT's reserved entries and clear MDFAT reserved bits;
+- release heap sectors still held by free clusters;
+- restore a cleared in-use flag when the cluster's data range and `MD` tag are
+  intact (otherwise the cluster is reported `CVF_UNRESOLVED`, never invented);
+- give a later cluster its own copy of heap sectors it shares with another;
+- end chains that run into free, reserved or out-of-range clusters, set file
+  lengths to their chains, and give later cross-linked files private copies of
+  the shared clusters (cross-linked directories are detached and reported);
+- save lost chains as root `FILEnnnn.CHK` files, or free them if the 512-entry
+  root is full;
+- rebuild the BitFAT from the final MDFAT.
+
+The journal (`MDCVFJ01`, CRC-checked records bound to the CVF's size and
+MDBPB) is written and reread before any CVF write; each sector is written and
+verified, and a failure rolls back the sectors already written. Restore
+refuses sectors changed for other reasons. `tests/test_cvf_repair.py` repairs
+each kind of damage and all of them together, confirms the independent checker
+then reports no issues and copied data is byte-identical, and undoes every
+journal exactly. A fault-injection build (`-DMAGICDISK_CVF_FAULTS`) tears the
+write at every position in turn; each run must restore the CVF byte-for-byte,
+including the half-written sector. `tests/test_cvf.py` builds volumes from the
+[Tech Help! CVF layout](http://fuz.ooo/techhelp/805-doublespace_compressed_volume_file_layout.html)
+and checks each finding; real DBLSPACE output has not been available for
+testing.
 
 ## CMOS check
 

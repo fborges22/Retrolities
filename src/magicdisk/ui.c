@@ -2645,6 +2645,90 @@ static void cmos_check(void)
                              : "CMOS check passed; nothing was written.");
 }
 
+/* Read-only DoubleSpace/DriveSpace CVF check of a host file such as
+   H:\DBLSPACE.000; findings reuse the CMOS dialog's line collector. */
+static void cvf_check(void)
+{
+    DtCvfResult cvf;
+    CmosLog log;
+    char path[128], err[160], head[80], body[80], more[40];
+    const char *lines[10];
+    unsigned i, n = 0;
+    int ok;
+
+    if (!prompt(" CVF FILE (E.G. H:\\DBLSPACE.000) ", path, sizeof(path))) {
+        strcpy(ui.status, "Compressed volume check cancelled.");
+        return;
+    }
+    memset(&log, 0, sizeof(log));
+    ui.busy = 1;
+    ok = dt_cvf_check(path, &cvf, cmos_line, &log, progress, NULL, err);
+    ui.busy = 0;
+    if (!ok) {
+        strcpy(ui.status, err);
+        return;
+    }
+    sprintf(head,
+            "%s %s: %lu issues.",
+            cvf.drivespace ? "DriveSpace" : "DoubleSpace",
+            cvf.complete ? "check complete" : "check PARTIAL",
+            (unsigned long)cvf.errors);
+    sprintf(body,
+            "%lu clusters used; heap %lu/%lu sectors; %lu files.",
+            (unsigned long)cvf.used,
+            (unsigned long)cvf.heap_used,
+            (unsigned long)cvf.heap_sectors,
+            (unsigned long)cvf.files);
+    lines[n++] = head;
+    lines[n++] = body;
+    for (i = 0; i < log.count && n < 9; i++)
+        lines[n++] = log.line[i];
+    if (log.more) {
+        sprintf(more, "... and %u more", log.more);
+        lines[n++] = more;
+    }
+    modal(" COMPRESSED VOLUME CHECK ", lines, n);
+    strcpy(ui.status, cvf.errors ? "Compressed volume problems found; nothing was written."
+                                 : "Compressed volume check finished; nothing was written.");
+    if (cvf.errors) {
+        DtCvfRepair fix;
+        char input[16], journal[128], plan[80];
+
+        if (!dt_cvf_repair(path, 0, NULL, dt_dos_now(), &fix, NULL, NULL, err)) {
+            strcpy(ui.status, err);
+            return;
+        }
+        if (!fix.sectors) {
+            strcpy(ui.status, "No automatic CVF repair applies; findings remain.");
+            return;
+        }
+        sprintf(plan,
+                "%u repairs in %u sectors; %u problems stay unresolved.",
+                fix.fixes,
+                fix.sectors,
+                fix.unresolved);
+        n = 0;
+        lines[n++] = plan;
+        lines[n++] = "Only bookkeeping changes: MDFAT, BitFAT, FAT and entries.";
+        lines[n++] = "Shared compressed data is copied byte-for-byte.";
+        lines[n++] = "Lost chains become root FILEnnnn.CHK files.";
+        lines[n++] = "Unmount the CVF and clear its R/S/H attributes first.";
+        lines[n++] = "Type REPAIR, then a NEW journal file on another disk.";
+        if (!modal(" REPAIR COMPRESSED VOLUME ", lines, n) ||
+            !prompt(" TYPE REPAIR TO FIX THE COMPRESSED VOLUME ", input, sizeof(input)) ||
+            strcmp(input, "REPAIR") ||
+            !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+            strcpy(ui.status, "Compressed volume repair cancelled; nothing was written.");
+            return;
+        }
+        ui.busy = 1;
+        ok = dt_cvf_repair(path, 1, journal, dt_dos_now(), &fix, NULL, NULL, err);
+        ui.busy = 0;
+        strcpy(ui.status, ok ? "Compressed volume repaired and verified. Keep the journal."
+                             : err);
+    }
+}
+
 typedef struct {
     char line[8][64];
     unsigned count, more;
@@ -3602,6 +3686,7 @@ enum {
     REPAIR_CROSSLINKS,
     CONVERT_LOST,
     CMOS_CHECK,
+    CVF_CHECK,
     SECTOR_VIEW,
     OWNER_VIEW,
     HELP,
@@ -3696,6 +3781,7 @@ static const MenuItem fix_menu[] = {
     {"Copy cross-linked files...", REPAIR_CROSSLINKS},
     {"Convert lost chains...", CONVERT_LOST},
     {"CMOS check...", CMOS_CHECK},
+    {"Check compressed volume...", CVF_CHECK},
     {NULL, 0},
 };
 static const MenuItem *menus[] = {disk_menu, diagnose_menu, view_menu, report_menu, help_menu,
@@ -4100,6 +4186,9 @@ static int action(int command)
         break;
     case CMOS_CHECK:
         cmos_check();
+        break;
+    case CVF_CHECK:
+        cvf_check();
         break;
     case RECOVER_DIRECTORIES:
         recover_files(3, 0);

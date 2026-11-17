@@ -49,6 +49,8 @@ static void usage(void)
          "       MAGICDSK --dos-map               Show DOS-to-BIOS drive inventory\n"
          "       MAGICDSK --cmos [DUMP]           Check CMOS setup (or a 128-byte dump)\n"
          "       MAGICDSK --cvf FILE              Check a DBLSPACE/DRVSPACE.nnn volume\n"
+         "       MAGICDSK --cvf FILE --repair [--apply --journal NEWFILE]\n"
+         "       MAGICDSK --cvf FILE --restore-journal FILE --apply\n"
          "Options: --list | --partition N | --surface | --retest-bad\n"
          "         --find-volumes [--search-first LBA] [--search-count SECTORS]\n"
          "         --volume-start LBA             Inspect without a partition entry\n"
@@ -569,10 +571,54 @@ int main(int argc, char **argv)
     }
     if (!strcmp(argv[1], "--cvf")) {
         DtCvfResult cvf;
+        int repair = 0, apply_cvf = 0;
+        const char *cvf_journal = NULL, *cvf_restore = NULL;
 
-        if (argc != 3) {
-            usage();
+        for (i = 3; i < (unsigned)argc; i++) {
+            if (!strcmp(argv[i], "--repair"))
+                repair = 1;
+            else if (!strcmp(argv[i], "--apply"))
+                apply_cvf = 1;
+            else if (!strcmp(argv[i], "--journal") && i + 1 < (unsigned)argc)
+                cvf_journal = argv[++i];
+            else if (!strcmp(argv[i], "--restore-journal") && i + 1 < (unsigned)argc)
+                cvf_restore = argv[++i];
+            else {
+                usage();
+                return 2;
+            }
+        }
+        if (argc < 3 || (repair && cvf_restore) || (apply_cvf && !repair && !cvf_restore) ||
+            (repair && apply_cvf != (cvf_journal != NULL)) || (cvf_restore && !apply_cvf) ||
+            (!repair && cvf_journal)) {
+            puts("Use --cvf FILE [--repair [--apply --journal NEWFILE]] or "
+                 "--cvf FILE --restore-journal FILE --apply");
             return 2;
+        }
+        if (cvf_restore) {
+            if (!dt_cvf_restore(argv[2], cvf_restore, err)) {
+                puts(err);
+                return 2;
+            }
+            puts("Compressed volume sectors restored and verified. Journal retained.");
+            return 0;
+        }
+        if (repair) {
+            DtCvfRepair fix;
+
+            if (!dt_cvf_repair(
+                    argv[2], apply_cvf, cvf_journal, dt_dos_now(), &fix, report, NULL, err)) {
+                puts(err);
+                return 2;
+            }
+            printf("%u repairs, %u unresolved, %u sectors %s.\n",
+                   fix.fixes,
+                   fix.unresolved,
+                   fix.sectors,
+                   fix.applied ? "written and verified" : "to change (preview only)");
+            if (fix.applied)
+                puts("Keep the journal; --restore-journal undoes this repair.");
+            return fix.unresolved ? 1 : 0;
         }
         if (!dt_cvf_check(argv[2], &cvf, report, NULL, NULL, NULL, err)) {
             puts(err);

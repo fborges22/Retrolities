@@ -478,6 +478,17 @@ typedef struct {
 } DtCvfResult;
 int dt_cvf_check(const char *path, DtCvfResult *result, DtReport report, void *report_ctx,
                  DtProgress progress, void *ctx, char *err);
+/* Journaled CVF bookkeeping repair: MDFAT flags, stale entries, heap
+   cross-links (stored sectors copied, never recompressed), inner chains,
+   sizes, cross-linked files, lost chains (FILEnnnn.CHK) and the BitFAT.
+   Preview unless apply; restore undoes a journal exactly. */
+typedef struct {
+    unsigned fixes, unresolved, sectors;
+    int applied;
+} DtCvfRepair;
+int dt_cvf_repair(const char *path, int apply, const char *journal, dt_u32 stamp,
+                  DtCvfRepair *result, DtReport report, void *report_ctx, char *err);
+int dt_cvf_restore(const char *path, const char *journal, char *err);
 
 /* Render UTF-8 through VGA CP437, substituting unavailable glyphs with '?'. */
 void dt_display_utf8(const char *input, char *output, size_t capacity, size_t skip);

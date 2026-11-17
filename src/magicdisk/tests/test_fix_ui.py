@@ -3,9 +3,11 @@
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
 import tempfile
+from cvf_fixture import volume
 from xlink_fixture import crosslinked, fsck, read_file
 
 cli = Path(sys.argv[1]).resolve()
@@ -57,9 +59,39 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-fix-ui-') as directory:
         assert image.read_bytes() == broken
 
         # The CMOS check is read-only; the host build explains it needs DOS.
-        play(root, image, opened + ['f10', 'left', 'end', 'wait:CMOS check...', 'enter',
+        play(root, image, opened + ['f10', 'left', 'end', 'up', 'wait:CMOS check...', 'enter',
                                     'wait:CMOS access needs MAGICDSK.EXE under DOS', 'esc'])
         assert image.read_bytes() == broken
+
+        # Compressed-volume check: a fixture CVF passes; a FAT image is refused.
+        if bits == 12:
+            cvf, entries = volume()
+            cvf_file = root / 'DRVSPACE.000'
+            cvf_file.write_bytes(cvf.finish(entries))
+            play(root, image, opened + [
+                'f10', 'left', 'end', 'wait:Check compressed volume...', 'enter',
+                'wait:CVF FILE', f'type:{cvf_file}', 'enter',
+                'wait:COMPRESSED VOLUME CHECK', 'wait:DriveSpace check complete: 0 issues.',
+                'enter', 'wait:Compressed volume check finished; nothing was written.',
+                'f10', 'left', 'end', 'enter', 'wait:CVF FILE', f'type:{image}', 'enter',
+                'wait:not a DoubleSpace or DriveSpace volume', 'esc'])
+            assert image.read_bytes() == broken
+            # A damaged CVF: review, cancel, then repair with a journal.
+            damaged = bytearray(cvf_file.read_bytes())
+            struct.pack_into('<I', damaged, cvf.root * 512 + 28, 9000)
+            cvf_file.write_bytes(damaged)
+            check = ['f10', 'left', 'end', 'enter', 'wait:CVF FILE', f'type:{cvf_file}', 'enter',
+                     'wait:size 9000 needs 2 clusters', 'enter', 'wait:REPAIR COMPRESSED VOLUME',
+                     'wait:1 repairs in 1 sectors']
+            play(root, image, opened + check + ['esc',
+                 'wait:Compressed volume repair cancelled; nothing was written.', 'esc'])
+            assert cvf_file.read_bytes() == damaged
+            play(root, image, opened + check + [
+                'enter', 'wait:TYPE REPAIR', 'type:REPAIR', 'enter',
+                'wait:NEW JOURNAL FILE', f'type:{root / "cvf.mdj"}', 'enter',
+                'wait:Compressed volume repaired and verified.', 'esc'])
+            assert subprocess.run([str(cli), '--cvf', str(cvf_file)],
+                                  capture_output=True).returncode == 0
 
         # P on CHAIN_SHARED opens cross-link copies (not truncating tree repair).
         code, report = scan(image)
@@ -77,7 +109,8 @@ with tempfile.TemporaryDirectory(prefix='magicdisk-fix-ui-') as directory:
             'f10', 'left', 'down', 'down', 'wait:Copy cross-linked files...', 'enter',
             'wait:REVIEW CROSS-LINK COPIES', 'enter', 'wait:TYPE COPY', 'type:COPY', 'enter'] +
             journal(root / f'x{bits}.mdj') + ['wait:Repair verified.',
-            'f10', 'left', 'up', 'wait:CMOS check...', 'up', 'wait:Convert lost chains...', 'enter',
+            'f10', 'left', 'up', 'wait:Check compressed volume...', 'up', 'wait:CMOS check...', 'up',
+            'wait:Convert lost chains...', 'enter',
             'wait:REVIEW LOST-CHAIN ADOPTION', 'wait:as 2 root FILEnnnn.CHK files', 'enter',
             'wait:TYPE ADOPT', 'type:ADOPT', 'enter'] + journal(root / f'l{bits}.mdj') +
             ['wait:Repair verified.', 'f3', 'wait:Check finished.', 'esc'])

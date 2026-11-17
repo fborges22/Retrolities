@@ -7,7 +7,8 @@ MagicDisk inspects and repairs FAT12, FAT16 and FAT32 volumes. It covers the
 core of ScanDisk and Norton Disk Doctor - one-step automatic repair, cross-link
 copies, lost chains saved as FILEnnnn.CHK, surface and write tests with bad
 cluster retirement - and adds verified journals that undo every repair.
-Compressed (DoubleSpace/DriveSpace/Stacker) volumes are not supported.
+DoubleSpace/DriveSpace volume files are checked and repaired with journals;
+Stacker is not supported.
 Keep the recovery journals and export important files before repairing them.
 
 GETTING STARTED
@@ -77,6 +78,13 @@ marked bad and readable copies of damaged file clusters are relocated.
 Fix > CMOS check reads the setup CMOS and reports a dead battery, POST error
 flags, a bad checksum, an invalid clock and floppy or memory mismatches. It
 never writes CMOS; correct problems in the BIOS setup program.
+
+Fix > Check compressed volume reads a DBLSPACE.nnn or DRVSPACE.nnn file
+through its host drive (for example H:\DBLSPACE.000) and checks its MDFAT,
+sector heap, stamps and inner FAT. Findings lead to a repair review: type
+REPAIR and give a new journal file on another disk. Unmount the CVF and clear
+its R/S/H attributes first. Compressed data is copied, never recompressed.
+Compressed directories are not expanded and make the check PARTIAL.
 
 Fix > Copy cross-linked files gives each later owner of a shared chain its
 own copy of the shared clusters (type COPY). The first owner is unchanged.
@@ -205,6 +213,8 @@ COMMAND LINE EXAMPLES
       --lost-chains files|free|keep chooses .CHK files (default), freeing
       the clusters, or leaving lost chains untouched.
   MAGICDSK --cmos                              Check CMOS setup (read-only)
+  MAGICDSK --cvf H:\DBLSPACE.000               Check a compressed volume
+  MAGICDSK --cvf H:\DBLSPACE.000 --repair --apply --journal A:\CVF.MDJ
   MAGICDSK FLOPPY.IMG --repair-crosslinks --apply --journal A:\X.MDJ
   MAGICDSK FLOPPY.IMG --convert-lost --apply --journal A:\L.MDJ
   MAGICDSK --help
