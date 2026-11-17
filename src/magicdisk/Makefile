@@ -4,7 +4,7 @@ OBJ := $(ROOT)/build/dos/obj/magicdisk
 WATCOM ?= /opt/watcom
 WCC := $(WATCOM)/binl64/wcc386
 WLINK := $(WATCOM)/binl64/wlink
-SOURCES := main.c disk.c partition.c mbrjournal.c ebrjournal.c linkjournal.c containerjournal.c recordjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c ui.c
+SOURCES := main.c disk.c partition.c mbrjournal.c ebrjournal.c linkjournal.c containerjournal.c recordjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c xlink.c autofix.c cmos.c cvf.c ui.c
 OBJECTS := $(SOURCES:%.c=$(OBJ)/%.obj)
 .PHONY: dos host test test-dos
 dos: $(OUT)
@@ -18,6 +18,7 @@ $(OUT): $(OBJECTS) | $(dir $(OUT))
 host:
 	mkdir -p $(ROOT)/build/host
 	$(CC) -std=c99 -Wall -Wextra -Werror -g $(SOURCES) -o $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -DMAGICDISK_SCRIPTED_UI $(SOURCES) -o $(ROOT)/build/host/magicdisk-ui
 test: host test-mbr test-ebr test-ebr-link test-container test-record
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/volume_search_probe.c disk.c -o $(ROOT)/build/host/volume-search-probe
 	python3 tests/test_volume_search.py $(ROOT)/build/host/volume-search-probe
@@ -33,22 +34,22 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	python3 tests/test_salvage.py $(ROOT)/build/host/magicdisk
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_image_io.c disk.c -o $(ROOT)/build/host/magicdisk-image-io-test
 	python3 tests/test_image_io.py $(ROOT)/build/host/magicdisk-image-io-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_plan_bounds.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-plan-bounds-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_plan_bounds.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-plan-bounds-test
 	$(ROOT)/build/host/magicdisk-plan-bounds-test
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_engine.c disk.c scan.c map.c -o $(ROOT)/build/host/magicdisk-engine-test
 	$(ROOT)/build/host/magicdisk-engine-test
 	python3 tests/test_images.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_fat_headers.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_bad_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-bad-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_bad_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-bad-test
 	$(ROOT)/build/host/magicdisk-bad-test $(ROOT)/build/host/fault.mdj
 	python3 tests/test_relocate.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_directory_relocate.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_salvage_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-salvage-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_salvage_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-salvage-test
 	$(ROOT)/build/host/magicdisk-salvage-test $(ROOT)/build/host/salvage.mdj
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_relocate_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-relocate-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_relocate_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-relocate-test
 	$(ROOT)/build/host/magicdisk-relocate-test $(ROOT)/build/host/relocate.mdj
 	$(ROOT)/build/host/magicdisk-relocate-test $(ROOT)/build/host/relocate.mdj --directory
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_root_relocate_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-root-relocate-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_root_relocate_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-root-relocate-test
 	$(ROOT)/build/host/magicdisk-root-relocate-test $(ROOT)/build/host/root-relocate.mdj
 	python3 tests/test_bad.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_fsinfo.py $(ROOT)/build/host/magicdisk
@@ -67,7 +68,7 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	python3 tests/test_directory_chains.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_shared_directories.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_shared_empty.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_directory_chain_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-directory-chain-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_directory_chain_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-directory-chain-test
 	$(ROOT)/build/host/magicdisk-directory-chain-test $(ROOT)/build/host/directory-chain-fault.mdj
 	$(ROOT)/build/host/magicdisk-directory-chain-test $(ROOT)/build/host/shared-prefix-fault.mdj --shared
 	$(ROOT)/build/host/magicdisk-directory-chain-test $(ROOT)/build/host/empty-shared-fault.mdj --empty-shared
@@ -85,17 +86,22 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	$(ROOT)/build/host/magicdisk-directory-chain-test $(ROOT)/build/host/grow-child-fault.mdj --grow-child
 	$(ROOT)/build/host/magicdisk-directory-chain-test $(ROOT)/build/host/grow-tree-fault.mdj --grow-tree
 	python3 tests/test_chains.py $(ROOT)/build/host/magicdisk
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_xlink_faults.c disk.c scan.c map.c bad.c repair.c journal.c xlink.c autofix.c -o $(ROOT)/build/host/magicdisk-xlink-test
+	python3 tests/test_crosslinks.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-xlink-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_cmos.c cmos.c -o $(ROOT)/build/host/magicdisk-cmos-test
+	$(ROOT)/build/host/magicdisk-cmos-test $(ROOT)/build/host/magicdisk
+	python3 tests/test_fix_ui.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-ui
 	python3 tests/test_tree.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_tree_relocation.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_tree_source.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_chain_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-chain-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_chain_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-chain-test
 	$(ROOT)/build/host/magicdisk-chain-test $(ROOT)/build/host/chain-fault.mdj
 	$(ROOT)/build/host/magicdisk-chain-test $(ROOT)/build/host/tree-fault.mdj --tree
 	$(ROOT)/build/host/magicdisk-chain-test $(ROOT)/build/host/source-fault.mdj --source
 	$(ROOT)/build/host/magicdisk-chain-test $(ROOT)/build/host/tree-entry-fault.mdj --tree-entries
 	$(ROOT)/build/host/magicdisk-chain-test $(ROOT)/build/host/source-entry-fault.mdj --source-entries
 	python3 tests/test_reclaim.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_reclaim_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-reclaim-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_reclaim_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-reclaim-test
 	$(ROOT)/build/host/magicdisk-reclaim-test $(ROOT)/build/host/reclaim-fault.mdj
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_recovery_faults.c disk.c scan.c recover.c -o $(ROOT)/build/host/magicdisk-recovery-test
 	python3 tests/test_directory_gaps.py $(ROOT)/build/host/magicdisk-recovery-test
@@ -110,19 +116,19 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	python3 tests/test_duplicate_names.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-duplicate-test
 	python3 tests/test_directories.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_timestamps.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_timestamp_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-timestamp-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_timestamp_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-timestamp-test
 	python3 tests/test_timestamp_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-timestamp-test
 	python3 tests/test_lfn_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-timestamp-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_alias_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-alias-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_alias_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-alias-test
 	python3 tests/test_alias_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-alias-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-label-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-label-test
 	python3 tests/test_label_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_text_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-label-text-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_label_text_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-label-text-test
 	python3 tests/test_label_text.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-text-test
 	python3 tests/test_metadata_sequence.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-label-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_extra_dots_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-extra-dots-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_extra_dots_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-extra-dots-test
 	python3 tests/test_extra_dots.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-extra-dots-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_attribute_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-attribute-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_attribute_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-attribute-test
 	python3 tests/test_attribute_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
 	python3 tests/test_attribute_alias_sequence.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
 	python3 tests/test_attribute_followups.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-attribute-test
@@ -131,11 +137,11 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	python3 tests/test_conflict_query.py $(ROOT)/build/host/magicdisk-conflict-query-test
 	python3 tests/test_conflict_repair.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_conflict_edges.py $(ROOT)/build/host/magicdisk
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_conflict_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-conflict-fault-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_conflict_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-conflict-fault-test
 	python3 tests/test_conflict_faults.py $(ROOT)/build/host/magicdisk-conflict-fault-test
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_text.c text.c -o $(ROOT)/build/host/magicdisk-text-test
 	$(ROOT)/build/host/magicdisk-text-test
-	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_fsinfo_faults.c disk.c scan.c bad.c repair.c journal.c -o $(ROOT)/build/host/magicdisk-fsinfo-test
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_fsinfo_faults.c disk.c scan.c bad.c repair.c journal.c xlink.c -o $(ROOT)/build/host/magicdisk-fsinfo-test
 	$(ROOT)/build/host/magicdisk-fsinfo-test $(ROOT)/build/host/fsinfo-fault.mdj
 
 $(ROOT)/build/dos/bin/KEYPLAY.EXE: tests/keyplay.c | $(OBJ) $(dir $(OUT))

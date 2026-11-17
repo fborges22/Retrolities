@@ -118,6 +118,7 @@ static dt_u32 sector_limit(const DtPlan *plan)
             plan->kind == DT_REPAIR_CONFLICTS || plan->kind == DT_REPAIR_LABEL_TEXT ||
             plan->kind == DT_REPAIR_EXTRA_DOTS || plan->kind == DT_REPAIR_ATTRIBUTES ||
             plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
+            plan->kind == DT_REPAIR_CROSSLINKS || plan->kind == DT_REPAIR_LOST_FILES ||
             (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
              plan->kind == DT_REPAIR_RELOCATE_DIR || plan->kind == DT_REPAIR_RELOCATE_ROOT))
                ? plan->volume->total
@@ -285,7 +286,9 @@ static int save_journal(DtPlan *plan, const char *path, DtWriteProgress writing,
     memset(header, 0, sizeof(header));
     memcpy(header, "MDJNL001", 8);
     put32(header + 8,
-          plan->kind == DT_REPAIR_LABEL_TEXT      ? 23
+          plan->kind == DT_REPAIR_LOST_FILES      ? 25
+          : plan->kind == DT_REPAIR_CROSSLINKS    ? 24
+          : plan->kind == DT_REPAIR_LABEL_TEXT    ? 23
           : plan->kind == DT_REPAIR_EXTRA_DOTS    ? 22
           : plan->kind == DT_REPAIR_ATTRIBUTES    ? 21
           : plan->kind == DT_REPAIR_CONFLICTS     ? 20
@@ -373,7 +376,7 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         goto invalid;
     version = dt_dword(header + 8);
     kind = dt_dword(header + 36);
-    if ((version < 1 || version > 23) || kind > DT_REPAIR_LABEL_TEXT ||
+    if ((version < 1 || version > 25) || kind > DT_REPAIR_LOST_FILES ||
         (version == 1 && kind != DT_REPAIR_BAD) ||
         (version == 3 ? kind != DT_REPAIR_MIRROR : kind == DT_REPAIR_MIRROR) ||
         (version == 4 ? kind != DT_REPAIR_LOST : kind == DT_REPAIR_LOST) ||
@@ -395,7 +398,9 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
         (version == 20 ? kind != DT_REPAIR_CONFLICTS : kind == DT_REPAIR_CONFLICTS) ||
         (version == 21 ? kind != DT_REPAIR_ATTRIBUTES : kind == DT_REPAIR_ATTRIBUTES) ||
         (version == 22 ? kind != DT_REPAIR_EXTRA_DOTS : kind == DT_REPAIR_EXTRA_DOTS) ||
-        (version == 23 ? kind != DT_REPAIR_LABEL_TEXT : kind == DT_REPAIR_LABEL_TEXT))
+        (version == 23 ? kind != DT_REPAIR_LABEL_TEXT : kind == DT_REPAIR_LABEL_TEXT) ||
+        (version == 24 ? kind != DT_REPAIR_CROSSLINKS : kind == DT_REPAIR_CROSSLINKS) ||
+        (version == 25 ? kind != DT_REPAIR_LOST_FILES : kind == DT_REPAIR_LOST_FILES))
         goto invalid;
     plan->kind = (int)kind;
     if (kind == DT_REPAIR_SALVAGE) {
@@ -410,7 +415,8 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
     count = dt_dword(header + 12);
     if (!count || count >= sector_limit(plan) ||
         (kind != DT_REPAIR_TREE_SOURCE && kind != DT_REPAIR_ALIASES &&
-         kind != DT_REPAIR_CONFLICTS && kind != DT_REPAIR_LABEL_TEXT && dt_dword(header + 32) > 1))
+         kind != DT_REPAIR_CONFLICTS && kind != DT_REPAIR_LABEL_TEXT &&
+         kind != DT_REPAIR_LOST_FILES && dt_dword(header + 32) > 1))
         goto invalid;
     /* Check the file extent before trusting an untrusted allocation count. */
     if (fseek(file, 0, SEEK_END) || (length = ftell(file)) < 0 ||
@@ -458,6 +464,11 @@ static int load_journal(DtVolume *v, const char *path, DtPlan *plan, DtProgress 
     if ((kind == DT_REPAIR_ALIASES || kind == DT_REPAIR_CONFLICTS ||
          kind == DT_REPAIR_LABEL_TEXT) &&
         (!plan->cluster || !alias_policy_valid(plan->mark_bad)))
+        goto invalid;
+    if (kind == DT_REPAIR_CROSSLINKS && (!plan->cluster || plan->mark_bad))
+        goto invalid;
+    if (kind == DT_REPAIR_LOST_FILES &&
+        (!plan->cluster || !dt_dos_stamp_valid((dt_u32)plan->mark_bad)))
         goto invalid;
     if (kind == DT_REPAIR_BOOT_PRIMARY &&
         (v->bits != 32 || count != 1 || plan->mark_bad || !plan->cluster ||
@@ -679,6 +690,12 @@ int dt_plan_apply_ex(DtPlan *plan, const char *journal, DtProgress progress, voi
     } else if (plan->kind == DT_REPAIR_BOOT_PRIMARY) {
         if (!dt_boot_primary_plan(v, check, progress, ctx, err))
             goto done;
+    } else if (plan->kind == DT_REPAIR_CROSSLINKS) {
+        if (!dt_crosslink_plan(v, check, progress, ctx, err))
+            goto done;
+    } else if (plan->kind == DT_REPAIR_LOST_FILES) {
+        if (!dt_lost_files_plan(v, (dt_u32)plan->mark_bad, check, progress, ctx, err))
+            goto done;
     } else {
         fail(err, "Unknown repair operation");
         goto done;
@@ -864,6 +881,16 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
             &original, expected, progress ? restore_progress : NULL, &tracking, err);
     else if (plan->kind == DT_REPAIR_CHAINS)
         ok = dt_chain_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_CROSSLINKS)
+        ok = dt_crosslink_plan(
+            &original, expected, progress ? restore_progress : NULL, &tracking, err);
+    else if (plan->kind == DT_REPAIR_LOST_FILES)
+        ok = dt_lost_files_plan(&original,
+                                (dt_u32)plan->mark_bad,
+                                expected,
+                                progress ? restore_progress : NULL,
+                                &tracking,
+                                err);
     else
         ok = dt_lost_plan(&original, expected, progress ? restore_progress : NULL, &tracking, err);
     if (!ok && tracking.cancelled) {
@@ -884,6 +911,8 @@ static int validate_owned_restore(DtPlan *plan, DtProgress progress, void *ctx, 
                              plan->kind == DT_REPAIR_ATTRIBUTES || plan->kind == DT_REPAIR_LABELS ||
                              plan->kind == DT_REPAIR_ALIASES ||
                              plan->kind == DT_REPAIR_FAT_HEADERS ||
+                             plan->kind == DT_REPAIR_CROSSLINKS ||
+                             plan->kind == DT_REPAIR_LOST_FILES ||
                              (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
                               plan->kind == DT_REPAIR_RELOCATE_DIR ||
                               plan->kind == DT_REPAIR_RELOCATE_ROOT)
@@ -936,7 +965,8 @@ static int restore_plan(DtVolume *v, const char *journal, DtProgress progress, v
          plan->kind == DT_REPAIR_CONFLICTS || plan->kind == DT_REPAIR_LABEL_TEXT ||
          plan->kind == DT_REPAIR_EXTRA_DOTS || plan->kind == DT_REPAIR_ATTRIBUTES ||
          plan->kind == DT_REPAIR_LABELS || plan->kind == DT_REPAIR_ALIASES ||
-         plan->kind == DT_REPAIR_FAT_HEADERS ||
+         plan->kind == DT_REPAIR_FAT_HEADERS || plan->kind == DT_REPAIR_CROSSLINKS ||
+         plan->kind == DT_REPAIR_LOST_FILES ||
          (plan->kind == DT_REPAIR_SALVAGE || plan->kind == DT_REPAIR_RELOCATE ||
           plan->kind == DT_REPAIR_RELOCATE_DIR || plan->kind == DT_REPAIR_RELOCATE_ROOT)) &&
         !validate_owned_restore(plan, progress, ctx, err))

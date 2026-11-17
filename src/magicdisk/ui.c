@@ -5,10 +5,12 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(__WATCOMC__) || defined(MAGICDISK_SCRIPTED_UI)
 #ifdef __WATCOMC__
 #include <conio.h>
 #include <i86.h>
 #include <dos.h>
+#endif
 
 #define NAV_LEFT (256 + 75)
 #define NAV_RIGHT (256 + 77)
@@ -101,6 +103,7 @@ static void box(int x, int y, int w, int h, const char *title)
         text(x + 2, y, BRIGHT, title);
 }
 
+#ifdef __WATCOMC__
 /* VGA DAC colors for readable navy, teal and silver chrome. */
 static void video_palette(void)
 {
@@ -212,6 +215,130 @@ static int key(void)
         return 256 + getch();
     return k;
 }
+
+#else
+/* Scripted host build of the real workspace for automated UI tests.
+   MAGICDISK_KEYS names a script with one action per line:
+     f1..f10, up, down, left, right, home, end, pgup, pgdn, enter, esc, bs,
+     type:TEXT (characters), key:C (one character),
+     wait:TEXT (fail with status 3 unless the screen shows TEXT),
+     absent:TEXT (fail unless the screen does not show TEXT).
+   MAGICDISK_SCREEN receives the final screen; an exhausted script exits 4. */
+static FILE *script;
+static char pending[256];
+static unsigned pending_at, pending_len;
+
+static int video_open(void)
+{
+    const char *path = getenv("MAGICDISK_KEYS");
+
+    script = path ? fopen(path, "r") : NULL;
+    return script != NULL;
+}
+
+static void screen_text(char *out)
+{
+    unsigned i;
+
+    for (i = 0; i < 2000; i++) {
+        unsigned ch = canvas[i] & 255;
+
+        out[i + i / 80] = (char)(ch >= 32 && ch < 127 ? ch : ch ? '#' : ' ');
+        if (i % 80 == 79)
+            out[i + i / 80 + 1] = '\n';
+    }
+    out[2025] = 0;
+}
+
+static void dump_screen(void)
+{
+    const char *path = getenv("MAGICDISK_SCREEN");
+    char screen[2026];
+    FILE *file;
+
+    if (!path)
+        return;
+    screen_text(screen);
+    file = fopen(path, "w");
+    if (file) {
+        fputs(screen, file);
+        fclose(file);
+    }
+}
+
+static void video_close(void)
+{
+    dump_screen();
+    if (script)
+        fclose(script);
+}
+
+static void flush(void)
+{
+    memcpy(previous, canvas, sizeof(canvas));
+}
+
+static int kbhit(void)
+{
+    return 0;
+}
+
+static void script_fail(const char *why, const char *line)
+{
+    dump_screen();
+    fprintf(stderr, "UI script: %s: %s\n", why, line);
+    exit(3);
+}
+
+static int key(void)
+{
+    static const struct {
+        const char *name;
+        int code;
+    } names[] = {{"f1", KEY_F1},          {"f2", KEY_F1 + 1},   {"f3", KEY_F1 + 2},
+                 {"f4", KEY_F1 + 3},      {"f5", KEY_F1 + 4},   {"f6", KEY_F1 + 5},
+                 {"f7", KEY_F1 + 6},      {"f8", KEY_F1 + 7},   {"f9", KEY_F1 + 8},
+                 {"f10", KEY_F10},        {"up", NAV_UP},       {"down", NAV_DOWN},
+                 {"left", NAV_LEFT},      {"right", NAV_RIGHT}, {"home", NAV_HOME},
+                 {"end", NAV_END},        {"pgup", NAV_PGUP},   {"pgdn", NAV_PGDN},
+                 {"enter", 13},           {"esc", 27},          {"bs", 8}};
+    char line[256], screen[2026];
+    unsigned i;
+
+    for (;;) {
+        if (pending_at < pending_len)
+            return (unsigned char)pending[pending_at++];
+        if (!fgets(line, sizeof(line), script)) {
+            dump_screen();
+            fputs("UI script exhausted\n", stderr);
+            exit(4);
+        }
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#')
+            continue;
+        if (!strncmp(line, "wait:", 5) || !strncmp(line, "absent:", 7)) {
+            int want = line[0] == 'w';
+
+            screen_text(screen);
+            if ((strstr(screen, strchr(line, ':') + 1) != NULL) != want)
+                script_fail(want ? "missing screen text" : "unexpected screen text", line);
+            continue;
+        }
+        if (!strncmp(line, "type:", 5)) {
+            strcpy(pending, line + 5);
+            pending_at = 0;
+            pending_len = (unsigned)strlen(pending);
+            continue;
+        }
+        if (!strncmp(line, "key:", 4))
+            return (unsigned char)line[4];
+        for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+            if (!strcmp(line, names[i].name))
+                return names[i].code;
+        script_fail("unknown action", line);
+    }
+}
+#endif
 
 static void number(int x, int y, const char *label, dt_u32 n, unsigned color)
 {
@@ -327,7 +454,7 @@ static void draw_workspace(void)
     text(24, 0, TITLE, "DISK DIAGNOSTICS & RECOVERY");
     text(65, 0, TITLE, !ui.candidates && ui.disk.write ? "WRITE MODE 0.3" : "READ ONLY  0.3");
     fill(0, 1, 80, ' ', CHROME);
-    text(2, 1, CHROME, "Disk    Diagnose    View    Reports    Help");
+    text(2, 1, CHROME, "Disk    Diagnose    View    Reports    Help    Fix");
     text(62, 1, CHROME, "F10 Menu  F1 Help");
     text(2, 3, BRIGHT, ui.opened ? ui.source : "Welcome to MagicDisk");
     if (ui.mounted) {
@@ -2406,6 +2533,260 @@ static void reclaim_lost(void)
     dt_plan_free(plan);
 }
 
+/* Data-preserving alternatives to truncation and reclaim. */
+static void preserve_data(int lost)
+{
+    DtPlan *plan;
+    char input[32], journal[128], err[160], summary[80];
+    const char *lines[7];
+    int ok;
+
+    plan = dt_plan_create();
+    if (!plan) {
+        strcpy(ui.status, "Insufficient memory for repair plan.");
+        return;
+    }
+    ui.busy = 1;
+    strcpy(ui.status, lost ? "Checking ownership before adopting lost chains."
+                           : "Checking ownership before copying cross-linked clusters.");
+    ok = lost ? dt_lost_files_plan(&ui.volume, dt_dos_now(), plan, progress, NULL, err)
+              : dt_crosslink_plan(&ui.volume, plan, progress, NULL, err);
+    ui.busy = 0;
+    if (!ok || !plan->count) {
+        strcpy(ui.status,
+               !ok    ? err
+               : lost ? "No lost chains to convert; no writes made."
+                      : "No cross-linked files; no writes made.");
+        dt_plan_free(plan);
+        return;
+    }
+    if (lost) {
+        sprintf(summary,
+                "Adopt lost chains as %lu root FILEnnnn.CHK files.",
+                (unsigned long)plan->cluster);
+        lines[1] = "Every lost cluster becomes readable through a file.";
+        lines[2] = "Lengths are whole clusters; review and rename them later.";
+        lines[3] = "Unused root slots are used before deleted entries.";
+        lines[4] = "A full FAT32 root gains one zeroed cluster if needed.";
+        lines[5] = "The journal restores every changed sector exactly.";
+        lines[6] = "Type ADOPT in the next dialog to approve this repair.";
+    } else {
+        sprintf(summary,
+                "Copy shared clusters for %lu cross-linked files.",
+                (unsigned long)plan->cluster);
+        lines[1] = "The first owner keeps the shared clusters unchanged.";
+        lines[2] = "Each later file receives private copies of its tail.";
+        lines[3] = "Copies use readable free clusters; names stay intact.";
+        lines[4] = "Unreadable shared clusters are refused, never guessed.";
+        lines[5] = "The journal restores every changed sector exactly.";
+        lines[6] = "Type COPY in the next dialog to approve this repair.";
+    }
+    lines[0] = summary;
+    if (!modal(lost ? " REVIEW LOST-CHAIN ADOPTION " : " REVIEW CROSS-LINK COPIES ", lines, 7) ||
+        !prompt(lost ? " TYPE ADOPT TO CREATE .CHK FILES " : " TYPE COPY TO SEPARATE FILES ",
+                input,
+                sizeof(input)) ||
+        strcmp(input, lost ? "ADOPT" : "COPY") ||
+        !prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(ui.status, "Repair cancelled; no writes made.");
+        dt_plan_free(plan);
+        return;
+    }
+    apply_reviewed_plan(plan, journal);
+    dt_plan_free(plan);
+}
+
+typedef struct {
+    char line[8][76];
+    unsigned count, more;
+} CmosLog;
+
+static void cmos_line(void *ctx, const char *code, dt_u32 where, const char *message)
+{
+    CmosLog *log = (CmosLog *)ctx;
+
+    (void)code;
+    (void)where;
+    if (log->count == 8) {
+        log->more++;
+        return;
+    }
+    sprintf(log->line[log->count++], "%.58s", message);
+}
+
+/* Read-only: CMOS registers and BIOS counts are compared, never written. */
+static void cmos_check(void)
+{
+    unsigned char cmos[128];
+    DtCmosHost host;
+    CmosLog log;
+    char err[160], head[80], more[40];
+    const char *lines[10];
+    unsigned issues, i, n = 0;
+
+    memset(&log, 0, sizeof(log));
+    if (!dt_cmos_read(cmos, &host, err)) {
+        strcpy(ui.status, err);
+        return;
+    }
+    issues = dt_cmos_check(cmos, &host, cmos_line, &log);
+    sprintf(head, issues ? "%u CMOS setup problems found." : "CMOS setup is consistent.", issues);
+    lines[n++] = head;
+    for (i = 0; i < log.count && n < 9; i++)
+        lines[n++] = log.line[i];
+    if (log.more) {
+        sprintf(more, "... and %u more", log.more);
+        lines[n++] = more;
+    }
+    if (!issues)
+        lines[n++] = "Battery, checksum, clock, drives and memory agree.";
+    modal(" CMOS CHECK (READ ONLY) ", lines, n);
+    strcpy(ui.status, issues ? "CMOS problems found; correct them in BIOS setup."
+                             : "CMOS check passed; nothing was written.");
+}
+
+typedef struct {
+    char line[8][64];
+    unsigned count, more;
+} AutofixLog;
+
+static void autofix_log(void *ctx, const char *step, int outcome, const DtPlan *plan,
+                        const char *detail)
+{
+    AutofixLog *log = (AutofixLog *)ctx;
+    char *line;
+
+    (void)detail;
+    if (outcome == DT_AUTOFIX_REFUSED)
+        return;
+    if (log->count == 8) {
+        log->more++;
+        return;
+    }
+    line = log->line[log->count++];
+    if (outcome == DT_AUTOFIX_FAILED)
+        sprintf(line, "FAILED  %.40s", step);
+    else
+        sprintf(line,
+                "%s %.34s: %lu items",
+                outcome == DT_AUTOFIX_APPLIED ? "Fixed  " : "Pending",
+                step,
+                (unsigned long)plan->cluster);
+}
+
+static void automatic_repair(int surface)
+{
+    DtAutofixOptions options;
+    DtAutofix result;
+    AutofixLog log;
+    char input[16], directory[128], err[160], reopen_err[160], head[128], tail[128], extra[64];
+    const char *lines[10];
+    unsigned i, n;
+    int ok;
+
+    if (ui.candidates || ui.volume.boot_source) {
+        strcpy(ui.status, "Automatic repair needs a normally mounted partition.");
+        return;
+    }
+    memset(&options, 0, sizeof(options));
+    memset(&log, 0, sizeof(log));
+    options.surface = surface;
+    options.stamp = dt_dos_now();
+    ui.busy = 1;
+    strcpy(ui.status, surface ? "Planning repairs and reading every sector; Esc cancels."
+                              : "Planning every applicable repair; Esc cancels.");
+    ok = dt_autofix(&ui.volume, &options, &result, autofix_log, &log, NULL, NULL, progress, NULL,
+                    NULL, NULL, err);
+    ui.busy = 0;
+    if (!ok) {
+        strcpy(ui.status, err);
+        return;
+    }
+    if (!result.planned && !result.surface_failed) {
+        strcpy(ui.status, result.initial.errors
+                              ? "No automatic repair applies; F6 lists remaining findings."
+                              : "No problems found; no writes made.");
+        return;
+    }
+    sprintf(head,
+            "%lu issues, %lu lost clusters, %lu unreadable sectors.",
+            (unsigned long)result.initial.errors,
+            (unsigned long)result.initial.lost_clusters,
+            (unsigned long)result.surface_failed);
+    n = 0;
+    lines[n++] = head;
+    for (i = 0; i < log.count && n < 7; i++)
+        lines[n++] = log.line[i];
+    if (log.more || i < log.count) {
+        sprintf(extra, "... and %u more steps", log.more + log.count - i);
+        lines[n++] = extra;
+    }
+    lines[n++] = "Steps are re-planned after each verified commit.";
+    lines[n++] = "Type FIX, then an existing journal DIRECTORY elsewhere.";
+    if (!modal(" REVIEW AUTOMATIC REPAIR ", lines, n) ||
+        !prompt(" TYPE FIX TO REPAIR EVERYTHING ", input, sizeof(input)) || strcmp(input, "FIX") ||
+        !prompt(" JOURNAL DIRECTORY ON A SEPARATE DISK ", directory, sizeof(directory)) ||
+        !confirm_bios_write()) {
+        strcpy(ui.status, "Automatic repair cancelled; no writes made.");
+        return;
+    }
+    memset(&log, 0, sizeof(log));
+    options.apply = 1;
+    options.journal_dir = directory;
+    release_disk_handle();
+    ui.opened = reopen_target(directory, err);
+    if (ui.opened) {
+        ui.busy = 1;
+        strcpy(ui.status, "Repairing: each step is journaled, written and verified.");
+        ok = dt_autofix(&ui.volume, &options, &result, autofix_log, &log, NULL, NULL, progress,
+                        NULL, write_progress, NULL, err);
+        ui.busy = 0;
+        if (!release_disk_handle()) {
+            ok = 0;
+            strcpy(err, "DOS flush/unlock failed; preserve journals and stop using this volume.");
+        }
+    } else
+        ok = 0;
+    ui.opened = reopen_target(NULL, reopen_err);
+    ui.mounted = ui.opened && mount_recovery(&ui.disk,
+                                             ui.partitions[ui.selected].start,
+                                             ui.partitions[ui.selected].size,
+                                             &ui.volume,
+                                             reopen_err);
+    ui.scanned = ui.retested = 0;
+    clear_findings();
+    if (ui.mounted)
+        allocation(2, ui.volume.clusters);
+    if (!ui.mounted) {
+        strcpy(ui.status, reopen_err);
+        return;
+    }
+    if (!ok) {
+        strcpy(ui.status, err);
+        if (!result.applied)
+            return;
+    }
+    sprintf(head, "Committed %u repairs in %u passes.", result.applied, result.passes);
+    sprintf(tail,
+            "Now: %lu issues, %lu lost, %lu bad clusters, %lu not retired.",
+            (unsigned long)result.final.errors,
+            (unsigned long)result.final.lost_clusters,
+            (unsigned long)result.final.bad_clusters,
+            (unsigned long)result.unresolved_bad);
+    n = 0;
+    lines[n++] = head;
+    lines[n++] = tail;
+    for (i = 0; i < log.count && n < 8; i++)
+        lines[n++] = log.line[i];
+    lines[n++] = "Journals MDFXnnnn.MDJ: restore newest first to undo.";
+    modal(ok ? " AUTOMATIC REPAIR RESULTS " : " AUTOMATIC REPAIR STOPPED ", lines, n);
+    if (ok)
+        strcpy(ui.status,
+               result.final.errors || result.unresolved_bad
+                   ? "Automatic repair finished; F3 and F6 show what still needs attention."
+                   : "Automatic repair verified: no remaining issues. Keep the journals.");
+}
+
 static void recover_files(int live, dt_u32 cluster)
 {
     char destination[128], err[160];
@@ -3216,6 +3597,11 @@ enum {
     REPAIR_LABELS,
     REPAIR_ALIASES,
     REBUILD_FAT_HEADERS,
+    AUTOFIX,
+    AUTOFIX_SURFACE,
+    REPAIR_CROSSLINKS,
+    CONVERT_LOST,
+    CMOS_CHECK,
     SECTOR_VIEW,
     OWNER_VIEW,
     HELP,
@@ -3304,9 +3690,18 @@ static const MenuItem help_menu[] = {
     {"About MagicDisk...", ABOUT},
     {NULL, 0},
 };
-static const MenuItem *menus[] = {disk_menu, diagnose_menu, view_menu, report_menu, help_menu};
-static const int menu_x[] = {1, 9, 21, 29, 40};
-static const char *menu_labels[] = {"Disk", "Diagnose", "View", "Reports", "Help"};
+static const MenuItem fix_menu[] = {
+    {"Automatic repair...      F9", AUTOFIX},
+    {"Automatic + surface...", AUTOFIX_SURFACE},
+    {"Copy cross-linked files...", REPAIR_CROSSLINKS},
+    {"Convert lost chains...", CONVERT_LOST},
+    {"CMOS check...", CMOS_CHECK},
+    {NULL, 0},
+};
+static const MenuItem *menus[] = {disk_menu, diagnose_menu, view_menu, report_menu, help_menu,
+                                  fix_menu};
+static const int menu_x[] = {1, 9, 21, 29, 40, 48};
+static const char *menu_labels[] = {"Disk", "Diagnose", "View", "Reports", "Help", "Fix"};
 
 static int enabled(int action)
 {
@@ -3326,7 +3721,8 @@ static int enabled(int action)
          action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS ||
          action == CLEAR_LFN || action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS ||
          action == REPAIR_ATTRIBUTES || action == REPAIR_CONFLICTS || action == REPAIR_LABELS ||
-         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
+         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS || action == AUTOFIX ||
+         action == AUTOFIX_SURFACE || action == REPAIR_CROSSLINKS || action == CONVERT_LOST))
         return 0;
     if (action == SURFACE_BLOCK)
         return ui.mounted && ui.map.cells;
@@ -3343,7 +3739,8 @@ static int enabled(int action)
          action == REPAIR_TREE_SOURCE || action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS ||
          action == CLEAR_LFN || action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS ||
          action == REPAIR_ATTRIBUTES || action == REPAIR_CONFLICTS || action == REPAIR_LABELS ||
-         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS))
+         action == REPAIR_ALIASES || action == REBUILD_FAT_HEADERS || action == AUTOFIX ||
+         action == AUTOFIX_SURFACE || action == REPAIR_CROSSLINKS || action == CONVERT_LOST))
         return 0;
     if (action == VOLUMES)
         return ui.opened && ui.count;
@@ -3353,7 +3750,8 @@ static int enabled(int action)
         action == REPAIR_ENTRIES || action == CLEAR_TIMESTAMPS || action == CLEAR_LFN ||
         action == REPAIR_LABEL_TEXT || action == CLEAR_EXTRA_DOTS || action == REPAIR_ATTRIBUTES ||
         action == REPAIR_CONFLICTS || action == REPAIR_LABELS || action == REPAIR_ALIASES ||
-        action == REBUILD_FAT_HEADERS)
+        action == REBUILD_FAT_HEADERS || action == AUTOFIX || action == AUTOFIX_SURFACE ||
+        action == REPAIR_CROSSLINKS || action == CONVERT_LOST)
         return ui.mounted;
     if (action == REBUILD_FAT || action == REPAIR_TREE_SOURCE)
         return ui.mounted && ui.volume.mirrored && ui.volume.copies > 1;
@@ -3404,7 +3802,7 @@ static int menu(void)
         if (k == 27 || k == KEY_F10)
             return 0;
         if (k == NAV_LEFT || k == NAV_RIGHT) {
-            tab = (tab + (k == NAV_RIGHT ? 1 : 4)) % 5;
+            tab = (tab + (k == NAV_RIGHT ? 1 : 5)) % 6;
             selected = top = 0;
         }
         if (k == NAV_UP)
@@ -3442,7 +3840,7 @@ static int action(int command)
                                  "",
                                  "Map: arrows select; Enter details; + zoom; - reset; T retest.",
                                  "Esc cancels an operation or closes a window.",
-                                 "",
+                                 "F9 Automatic repair: every fix journaled and verified.",
                                  "Allocation colors describe FAT entries, not file health.",
                                  "Surface read tests readability without writing to disk."};
     char path[128];
@@ -3690,6 +4088,19 @@ static int action(int command)
     case RECLAIM_LOST:
         reclaim_lost();
         break;
+    case AUTOFIX:
+    case AUTOFIX_SURFACE:
+        automatic_repair(command == AUTOFIX_SURFACE);
+        break;
+    case REPAIR_CROSSLINKS:
+        preserve_data(0);
+        break;
+    case CONVERT_LOST:
+        preserve_data(1);
+        break;
+    case CMOS_CHECK:
+        cmos_check();
+        break;
     case RECOVER_DIRECTORIES:
         recover_files(3, 0);
         break;
@@ -3731,7 +4142,8 @@ static int finding_repair(const char *code, int run)
     } repairs[] = {
         {"FILE_SIZE", REPAIR_FILES},
         {"CHAIN_RANGE", REPAIR_TREE},
-        {"CHAIN_SHARED", REPAIR_TREE},
+        {"CHAIN_SHARED", REPAIR_CROSSLINKS},
+        {"LOST_CLUSTERS", CONVERT_LOST},
         {"CHAIN_INVALID", REPAIR_TREE},
         {"DIR_DOT_METADATA", REPAIR_ENTRIES},
         {"DIR_DOT_MISSING", REPAIR_ENTRIES},
@@ -3808,6 +4220,8 @@ int dt_ui(const char *path)
             command = SAVE_REPORT;
         else if (k == KEY_F1 + 7)
             command = SECTOR_VIEW;
+        else if (k == KEY_F1 + 8)
+            command = AUTOFIX;
         else if (k == 't' || k == 'T')
             command = SURFACE_BLOCK;
         else if (k == 'o' || k == 'O')

@@ -47,6 +47,8 @@ static void usage(void)
          "       MAGICDSK --drive LETTER [options] Inspect/repair a mounted DOS volume\n"
          "       MAGICDSK --devices               List BIOS-reported devices\n"
          "       MAGICDSK --dos-map               Show DOS-to-BIOS drive inventory\n"
+         "       MAGICDSK --cmos [DUMP]           Check CMOS setup (or a 128-byte dump)\n"
+         "       MAGICDSK --cvf FILE              Check a DBLSPACE/DRVSPACE.nnn volume\n"
          "Options: --list | --partition N | --surface | --retest-bad\n"
          "         --find-volumes [--search-first LBA] [--search-count SECTORS]\n"
          "         --volume-start LBA             Inspect without a partition entry\n"
@@ -87,6 +89,12 @@ static void usage(void)
          "         --repair-directories          Repair directory loops/endings (preview)\n"
          "         --repair-files                Repair file chains and lengths (preview)\n"
          "         --reclaim-lost                Free unowned allocation (recover data first)\n"
+         "         --repair-crosslinks           Copy shared clusters to each later owner\n"
+         "         --convert-lost                Adopt lost chains as root FILEnnnn.CHK files\n"
+         "         --autofix [--surface] [--write-test] [--salvage]\n"
+         "                   [--lost-chains files|free|keep]\n"
+         "                                       Plan every repair in safe order (preview)\n"
+         "         --autofix --apply --journal DIR  Commit, one MDFXnnnn.MDJ per step\n"
          "         --export-files DIRECTORY      Export live files before repairs\n"
          "         --export-cluster N DIRECTORY  Export the file owning cluster N\n"
          "         --recover-directories DIRECTORY  Export orphan-directory contents\n"
@@ -145,8 +153,89 @@ enum {
     OP_ATTRIBUTES,
     OP_LABELS,
     OP_RELOCATE,
-    OP_SALVAGE
+    OP_SALVAGE,
+    OP_CROSSLINKS,
+    OP_LOST_FILES,
+    OP_AUTOFIX
 };
+
+static void autofix_note(void *ctx, const char *step, int outcome, const DtPlan *plan,
+                         const char *detail)
+{
+    (void)ctx;
+    if (outcome == DT_AUTOFIX_PLANNED)
+        printf("PLAN    %-30s %lu items, %u sectors\n",
+               step,
+               (unsigned long)plan->cluster,
+               plan->count);
+    else if (outcome == DT_AUTOFIX_APPLIED)
+        printf("FIXED   %-30s %u sectors; journal %s\n", step, plan->count, detail);
+    else if (outcome == DT_AUTOFIX_FAILED)
+        printf("FAILED  %-30s %s\n", step, detail);
+    else
+        printf("SKIPPED %-30s %s\n", step, detail);
+}
+
+static int autofix_command(DtVolume *v, const DtAutofixOptions *options)
+{
+    DtAutofix result;
+    char err[160];
+    int ok;
+
+    puts(options->apply ? "Automatic repair: every step is journaled and verified."
+                        : "Automatic repair preview: no sectors are written.");
+    ok = dt_autofix(
+        v, options, &result, autofix_note, NULL, report, NULL, NULL, NULL, NULL, NULL, err);
+    if (!ok) {
+        puts(err);
+        if (result.applied)
+            printf("%u steps were committed before stopping. Restore MDFX journals in reverse "
+                   "order to undo.\n",
+                   result.applied);
+        return 2;
+    }
+    printf("Before: %lu issues, %lu lost clusters, %lu bad clusters.\n",
+           (unsigned long)result.initial.errors,
+           (unsigned long)result.initial.lost_clusters,
+           (unsigned long)result.initial.bad_clusters);
+    if (options->surface || options->write_test)
+        printf("Surface: %s, %lu unreadable sectors, %lu not retired.\n",
+               result.surface_complete ? "complete" : "INCOMPLETE",
+               (unsigned long)result.surface_failed,
+               (unsigned long)result.unresolved_bad);
+    if (options->write_test && options->apply)
+        printf("Write test: %s, %lu free sectors verified, %lu clusters failed%s.\n",
+               result.write_complete ? "complete" : "INCOMPLETE",
+               (unsigned long)result.write_tested,
+               (unsigned long)result.write_failed,
+               result.write_unrestored ? ", SOME FREE SECTORS NOT RESTORED" : "");
+    else if (options->write_test)
+        puts("Write test runs only with --apply; the preview performed read tests.");
+    if (options->apply) {
+        printf("Committed %u repairs in %u passes.\n", result.applied, result.passes);
+        printf("After: %s, %lu issues, %lu lost clusters, %lu bad clusters.\n",
+               result.final.complete ? "complete" : "INCOMPLETE",
+               (unsigned long)result.final.errors,
+               (unsigned long)result.final.lost_clusters,
+               (unsigned long)result.final.bad_clusters);
+        if (!result.converged)
+            puts("Stopped at the pass limit; run --autofix again to continue.");
+        if (result.applied)
+            puts("Keep the journals; restore them newest first to undo the whole sequence.");
+    } else {
+        printf("%u repair steps apply to the current state.\n", result.planned);
+        if (result.planned)
+            puts("Later steps are re-planned after each commit; repeat with --apply --journal "
+                 "DIR.");
+    }
+    if (!result.final.complete ||
+        ((options->surface || options->write_test) && !result.surface_complete) ||
+        (options->write_test && options->apply && !result.write_complete))
+        return 2;
+    return result.final.errors || result.unresolved_bad || (!options->apply && result.planned)
+               ? 1
+               : 0;
+}
 
 static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, int apply,
                           const char *journal, int torn)
@@ -223,6 +312,10 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
         ok = dt_chain_plan_ex(v, plan, report, NULL, NULL, NULL, err);
     else if (op == OP_RECLAIM)
         ok = dt_lost_plan(v, plan, NULL, NULL, err);
+    else if (op == OP_CROSSLINKS)
+        ok = dt_crosslink_plan_ex(v, plan, report, NULL, NULL, NULL, err);
+    else if (op == OP_LOST_FILES)
+        ok = dt_lost_files_plan_ex(v, dt_dos_now(), plan, report, NULL, NULL, NULL, err);
     else if (op == OP_MIRROR)
         ok = dt_mirror_plan(v, (unsigned)cluster, plan, NULL, NULL, err);
     else
@@ -346,6 +439,19 @@ static int repair_command(DtVolume *v, int op, dt_u32 cluster, unsigned source, 
                    (unsigned long)plan->cluster,
                    plan->count);
             puts("Recover needed data first. Freed clusters may be overwritten by future writes.");
+        } else if (op == OP_CROSSLINKS) {
+            printf("Copy cross-linked clusters for %lu files; %u sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("The first owner keeps the shared clusters; each later file gets private "
+                 "copies.");
+            puts("New clusters come from readable free space. Names and dates stay intact.");
+        } else if (op == OP_LOST_FILES) {
+            printf("Convert lost chains into %lu root FILEnnnn.CHK files; %u sectors.\n",
+                   (unsigned long)plan->cluster,
+                   plan->count);
+            puts("Lengths are whole clusters. Unused root slots are preferred over deleted "
+                 "entries.");
         } else if (op == OP_MIRROR) {
             printf("Rebuild FAT copies from source %lu; %u metadata sectors.\n",
                    (unsigned long)cluster,
@@ -421,6 +527,10 @@ int main(int argc, char **argv)
     dt_u32 cluster = 0, ebr_sector = 0, link_source = 0, link_target = 0;
     const char *journal = NULL, *destination = NULL;
     dt_u32 start = 0, size, failures = 0;
+    DtAutofixOptions autofix;
+    int lost_option = 0;
+
+    memset(&autofix, 0, sizeof(autofix));
 
     while (argc > 1 && !strcmp(argv[1], "--code-page")) {
         if (argc < 3 || !select_codepage(argv[2]))
@@ -456,6 +566,65 @@ int main(int argc, char **argv)
         puts("Unlisted letters are unknown, including aliases and third-party drivers.");
         puts("This inventory does not authorize raw BIOS writes.");
         return 0;
+    }
+    if (!strcmp(argv[1], "--cvf")) {
+        DtCvfResult cvf;
+
+        if (argc != 3) {
+            usage();
+            return 2;
+        }
+        if (!dt_cvf_check(argv[2], &cvf, report, NULL, NULL, NULL, err)) {
+            puts(err);
+            return 2;
+        }
+        printf("%s volume %s: FAT%u, %lu clusters (%lu used: %lu compressed, %lu raw, %lu "
+               "sparse)\n",
+               cvf.drivespace ? "DriveSpace" : "DoubleSpace",
+               cvf.oem,
+               cvf.fat12 ? 12 : 16,
+               (unsigned long)cvf.clusters,
+               (unsigned long)cvf.used,
+               (unsigned long)cvf.compressed,
+               (unsigned long)cvf.raw,
+               (unsigned long)cvf.sparse);
+        printf("Sector heap %lu/%lu sectors used; %lu files, %lu directories.\n",
+               (unsigned long)cvf.heap_used,
+               (unsigned long)cvf.heap_sectors,
+               (unsigned long)cvf.files,
+               (unsigned long)cvf.dirs);
+        printf("Compressed volume check %s: %lu issues. Nothing was written.\n",
+               cvf.complete ? "complete" : "PARTIAL",
+               (unsigned long)cvf.errors);
+        return cvf.errors ? 1 : cvf.complete ? 0 : 2;
+    }
+    if (!strcmp(argv[1], "--cmos")) {
+        unsigned char cmos[128];
+        DtCmosHost host;
+        unsigned issues;
+
+        host.floppies = host.base_kb = DT_CMOS_UNKNOWN;
+        if (argc > 3) {
+            usage();
+            return 2;
+        }
+        if (argc == 3) {
+            FILE *dump = fopen(argv[2], "rb");
+
+            if (!dump || fread(cmos, 1, 128, dump) != 128) {
+                if (dump)
+                    fclose(dump);
+                puts("A CMOS dump must contain at least 128 bytes");
+                return 2;
+            }
+            fclose(dump);
+        } else if (!dt_cmos_read(cmos, &host, err)) {
+            puts(err);
+            return 2;
+        }
+        issues = dt_cmos_check(cmos, &host, report, NULL);
+        printf("CMOS check complete: %u issues. Nothing was written.\n", issues);
+        return issues ? 1 : 0;
     }
     if (!strcmp(argv[1], "--devices")) {
         unsigned drives[DT_BIOS_MAX];
@@ -692,6 +861,28 @@ int main(int argc, char **argv)
             op = OP_CHAINS;
         } else if (!strcmp(argv[arg], "--reclaim-lost") && op == OP_SCAN) {
             op = OP_RECLAIM;
+        } else if (!strcmp(argv[arg], "--repair-crosslinks") && op == OP_SCAN) {
+            op = OP_CROSSLINKS;
+        } else if (!strcmp(argv[arg], "--convert-lost") && op == OP_SCAN) {
+            op = OP_LOST_FILES;
+        } else if (!strcmp(argv[arg], "--autofix") && op == OP_SCAN) {
+            op = OP_AUTOFIX;
+        } else if (!strcmp(argv[arg], "--salvage")) {
+            autofix.salvage = 1;
+        } else if (!strcmp(argv[arg], "--write-test")) {
+            autofix.write_test = 1;
+        } else if (!strcmp(argv[arg], "--lost-chains") && arg + 1 < argc) {
+            const char *mode = argv[++arg];
+
+            autofix.lost_mode = !strcmp(mode, "files") ? DT_AUTOFIX_LOST_FILES
+                                : !strcmp(mode, "free") ? DT_AUTOFIX_LOST_FREE
+                                : !strcmp(mode, "keep") ? DT_AUTOFIX_LOST_KEEP
+                                                        : -1;
+            lost_option = 1;
+            if (autofix.lost_mode < 0) {
+                puts("--lost-chains accepts files, free or keep");
+                return 2;
+            }
         } else if (!strcmp(argv[arg], "--fat-source") && arg + 1 < argc) {
             dt_u32 n;
 
@@ -1029,14 +1220,17 @@ int main(int argc, char **argv)
         puts("CHS geometry options apply only to partition reconstruction or --link-ebr.");
         return 2;
     }
-    if ((torn && (op != OP_RESTORE || !apply)) || (fat_source && op != OP_TREE) ||
-        (listing && (surface || index || op != OP_SCAN)) || (surface && op != OP_SCAN) ||
+    if (((autofix.salvage || autofix.write_test || lost_option) && op != OP_AUTOFIX) ||
+        (torn && (op != OP_RESTORE || !apply)) || (fat_source && op != OP_TREE) ||
+        (listing && (surface || index || op != OP_SCAN)) ||
+        (surface && op != OP_SCAN && op != OP_AUTOFIX) ||
         (apply && op != OP_FAT_HEADERS && op != OP_MARK && op != OP_UNMARK && op != OP_RESTORE &&
          op != OP_FSINFO && op != OP_BOOT_BACKUP && op != OP_MIRROR && op != OP_RECLAIM &&
          op != OP_CHAINS && op != OP_DIRECTORIES && op != OP_BOOT_PRIMARY && op != OP_TREE &&
          op != OP_ENTRIES && op != OP_LFN && op != OP_ALIASES && op != OP_CONFLICTS &&
          op != OP_LABELS && op != OP_LABEL_TEXT && op != OP_EXTRA_DOTS && op != OP_ATTRIBUTES &&
-         op != OP_TIMESTAMPS && op != OP_RELOCATE && op != OP_SALVAGE) ||
+         op != OP_TIMESTAMPS && op != OP_RELOCATE && op != OP_SALVAGE && op != OP_CROSSLINKS &&
+         op != OP_LOST_FILES && op != OP_AUTOFIX) ||
         (boot_source && op != OP_SCAN && op != OP_BOOT_PRIMARY && op != OP_RESTORE &&
          !(explicit_start && op == OP_EXPORT_FILES)) ||
         (journal && !apply) || (apply && !journal) || (op == OP_RESTORE && !apply)) {
@@ -1210,6 +1404,16 @@ int main(int argc, char **argv)
                     recovered.candidates)
                      ? 1
                      : 0;
+        if (!close_disk(&disk, bios))
+            status = 2;
+        return status;
+    }
+    if (op == OP_AUTOFIX) {
+        autofix.apply = apply;
+        autofix.surface = surface;
+        autofix.stamp = dt_dos_now();
+        autofix.journal_dir = journal;
+        status = autofix_command(&volume, &autofix);
         if (!close_disk(&disk, bios))
             status = 2;
         return status;

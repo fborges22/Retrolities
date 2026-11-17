@@ -278,7 +278,9 @@ enum {
     DT_REPAIR_CONFLICTS,
     DT_REPAIR_ATTRIBUTES,
     DT_REPAIR_EXTRA_DOTS,
-    DT_REPAIR_LABEL_TEXT
+    DT_REPAIR_LABEL_TEXT,
+    DT_REPAIR_CROSSLINKS,
+    DT_REPAIR_LOST_FILES
 };
 
 typedef struct {
@@ -376,6 +378,18 @@ int dt_chain_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *repo
                      DtProgress progress, void *ctx, char *err);
 int dt_chain_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_lost_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+/* Give each later owner of a cross-linked tail its own copy of the shared
+   clusters (ScanDisk "make copies"), instead of truncating it. Journal v24. */
+int dt_crosslink_plan_ex(DtVolume *volume, DtPlan *plan, DtReport report, void *report_ctx,
+                         DtProgress progress, void *ctx, char *err);
+int dt_crosslink_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
+/* Adopt every lost chain as a root FILEnnnn.CHK file stamped with a DOS
+   date (high word) and time (low word). FAT32 roots may grow. Journal v25. */
+int dt_dos_stamp_valid(dt_u32 stamp);
+int dt_lost_files_plan_ex(DtVolume *volume, dt_u32 stamp, DtPlan *plan, DtReport report,
+                          void *report_ctx, DtProgress progress, void *ctx, char *err);
+int dt_lost_files_plan(DtVolume *volume, dt_u32 stamp, DtPlan *plan, DtProgress progress, void *ctx,
+                       char *err);
 int dt_fat_header_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_fsinfo_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
 int dt_boot_primary_plan(DtVolume *volume, DtPlan *plan, DtProgress progress, void *ctx, char *err);
@@ -414,6 +428,56 @@ int dt_export_files(DtVolume *volume, const char *destination, DtRecovery *resul
 
 int dt_export_cluster_file(DtVolume *volume, dt_u32 cluster, const char *destination,
                            DtRecovery *result, DtProgress progress, void *ctx, char *err);
+
+/* One-step automatic repair (ScanDisk /AUTOFIX, NDD /COMPLETE equivalent).
+   Every committed step has its own verified journal MDFXnnnn.MDJ in the
+   journal directory; restore them in reverse order to undo the sequence. */
+enum { DT_AUTOFIX_LOST_FILES, DT_AUTOFIX_LOST_FREE, DT_AUTOFIX_LOST_KEEP };
+enum { DT_AUTOFIX_PLANNED = 1, DT_AUTOFIX_APPLIED = 2, DT_AUTOFIX_REFUSED = -1,
+       DT_AUTOFIX_FAILED = -2 };
+
+typedef struct {
+    /* write_test inverts and restores free-cluster sectors (apply mode only). */
+    int apply, surface, salvage, lost_mode, write_test;
+    dt_u32 stamp;
+    const char *journal_dir;
+} DtAutofixOptions;
+
+typedef struct {
+    DtResult initial, final;
+    unsigned planned, applied, refused, passes, journal_number;
+    dt_u32 surface_failed, unresolved_bad, write_tested, write_failed, write_unrestored;
+    int converged, surface_complete, write_complete;
+} DtAutofix;
+
+typedef void (*DtAutofixNote)(void *, const char *step, int outcome, const DtPlan *plan,
+                              const char *detail);
+const char *dt_autofix_step_name(unsigned step);
+dt_u32 dt_dos_now(void);
+int dt_autofix(DtVolume *volume, const DtAutofixOptions *options, DtAutofix *result,
+               DtAutofixNote note, void *note_ctx, DtReport report, void *report_ctx,
+               DtProgress progress, void *ctx, DtWriteProgress writing, void *writing_ctx,
+               char *err);
+
+/* Read-only CMOS setup check (NDD-style). Unknown host facts are skipped. */
+#define DT_CMOS_UNKNOWN 0xffffU
+typedef struct {
+    unsigned floppies, base_kb;
+} DtCmosHost;
+unsigned dt_cmos_check(const unsigned char cmos[128], const DtCmosHost *host, DtReport report,
+                       void *ctx);
+int dt_cmos_read(unsigned char cmos[128], DtCmosHost *host, char *err);
+
+/* Read-only DoubleSpace/DriveSpace CVF check (DBLSPACE.nnn, DRVSPACE.nnn).
+   Returns 0 when the file is not a checkable CVF; errors counts findings. */
+typedef struct {
+    char oem[9];
+    int drivespace, fat12, complete;
+    dt_u32 clusters, used, sparse, raw, compressed, heap_sectors, heap_used, bitfat_mismatch;
+    dt_u32 files, dirs, lost, compressed_dirs, errors;
+} DtCvfResult;
+int dt_cvf_check(const char *path, DtCvfResult *result, DtReport report, void *report_ctx,
+                 DtProgress progress, void *ctx, char *err);
 
 /* Render UTF-8 through VGA CP437, substituting unavailable glyphs with '?'. */
 void dt_display_utf8(const char *input, char *output, size_t capacity, size_t skip);

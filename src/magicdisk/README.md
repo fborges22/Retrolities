@@ -1,20 +1,35 @@
 # MagicDisk
 
-MagicDisk is a DOS disk diagnosis and repair utility in development. It has a
-keyboard-driven 80-column TUI with a partition selector, cancellable
-diagnostics, allocation and surface maps, menus, a status bar, and a findings
-browser and a read-only hex/ASCII sector viewer. Developer: **Felipe Andrade Allemand Borges**. Bad-cluster marker and
-FAT-copy, FAT32 FSInfo and backup boot sector repairs are available for disk images and
-mounted MS-DOS 6.22/7.1 and FreeDOS volumes, with
-sector journals and verified rollback. FAT32 primary boot recovery can restore
-an unmountable image from its validated backup. Lost-chain export preserves the source and
-records recovered cluster contents in separate files. Live-file export preserves
-healthy file lengths and salvages damaged prefixes before repair, with UTF-8 path
-mapping and sector provenance. Journaled reclaim frees lost
-allocations after recovery. File repairs correct lengths and damaged chain endings
-while preserving names. Directory repairs remove loops and invalid endings from
-validated prefixes. Broader repair tools remain in development; this is not yet a complete
-ScanDisk or Norton Disk Doctor replacement.
+MagicDisk is a DOS disk diagnosis and repair utility for FAT12, FAT16 and
+FAT32. It has a keyboard-driven 80-column TUI with a partition selector,
+cancellable diagnostics, allocation and surface maps, menus, a status bar, a
+findings browser and a read-only hex/ASCII sector viewer. Developer: **Felipe
+Andrade Allemand Borges**.
+
+It covers the core of what ScanDisk and Norton Disk Doctor do — one-step
+automatic repair, cross-linked file copies, lost chains saved as `FILEnnnn.CHK`,
+surface and write tests with bad-cluster retirement, partition and boot-record
+recovery — and adds what neither offered: every write is planned, previewed,
+journaled to separate storage, verified, rolled back on failure and undoable
+later, even after an interrupted write. Repairs work on disk images, mounted
+MS-DOS 6.22/7.1 and FreeDOS volumes, and unmounted IDE partitions via the BIOS.
+Not covered: DoubleSpace/DriveSpace/Stacker compressed volume files (ScanDisk
+and NDD check these). GPT and sector sizes other than 512 bytes are also
+unsupported; neither DOS-era tool handled them either.
+
+| Capability | ScanDisk | Norton Disk Doctor | MagicDisk |
+|---|---|---|---|
+| FAT, directory, file-size, chain and cross-link checks | Yes | Yes | Yes, plus FAT headers, mirrors, dot entries, timestamps, attributes, labels and VFAT names |
+| One-step automatic repair | `/AUTOFIX` | `/QUICK`, auto-fix | `--autofix` / **F9**; re-planned and verified after every step |
+| Cross-linked files | Copy or delete | Copy | Private copies for every later owner; unreadable shared data refused, not guessed |
+| Lost chains | `FILEnnnn.CHK` or free | `FILEnnnn.CHK` or free | `FILEnnnn.CHK` (keeps deleted entries for undelete; grows a full FAT32 root), free, keep, or export elsewhere |
+| Surface test | Read (Windows 95 thorough mode adds write testing) | Read tests (pattern tests live in Calibrate) | Read of every sector; non-destructive free-space write test; per-sector findings with owners |
+| Bad clusters | Mark, move readable data | Mark, move data | Mark, relocate (3 read attempts), optional zero-filled salvage, retest, unmark |
+| Undo | Undo disk for the last run | Undo file for the last run | Per-step verified journals, exact undo, interrupted-write recovery |
+| Partition table and boot record | Boot sector only | Yes | MBR/EBR/extended-container reconstruction, lost-volume search, FAT32 boot and backup recovery |
+| Data rescue before repair | No | No | Live-file, lost-chain, orphan-directory and deleted-file export to another disk |
+| CMOS setup check | No | Yes | `--cmos` / **Fix > CMOS check**: battery, POST status, checksum, clock/calendar, floppy and memory agreement; read-only |
+| Long filenames and code pages | Windows 95 version | Later versions | VFAT with UTF-8 reports; CP437/850/852/860/866 aliases |
 
 ![MagicDisk allocation map](docs/allocation.png)
 
@@ -123,7 +138,7 @@ map range clears the previous map instead of leaving stale cells visible.
 synthetic FAT12/16/32 boundary values, read faults, cancellation and range checks
 inside QEMU; no physical source is written by this test.
 
-- **F10** opens the Disk, Diagnose, View, Reports and Help menus.
+- **F10** opens the Disk, Diagnose, View, Reports, Help and Fix menus.
   Arrows choose menus/items; Home/End select the first/last item, Page Up/Down
   move through long menus, Enter opens the action, and Esc closes the menu.
   Menus fit their longest label and scroll above the two bottom status bars.
@@ -136,6 +151,9 @@ inside QEMU; no physical source is written by this test.
   that range finished; F7 reports its volume sectors and absolute disk LBAs.
   Switching back with F5 preserves this range summary. No markers are changed.
 - **F5** loads the allocation map; **F6** browses findings; **F7** saves a report.
+- **F9**, or **Fix > Automatic repair**, plans and commits every applicable
+  repair with one journal per step. The **Fix** menu also offers automatic
+  repair with a surface scan, cross-link copies and lost-chain conversion.
 - **O** opens the cluster-owner viewer; **View > Cluster owner** offers the same action.
 - **F8** opens the read-only sector viewer at the selected block. It is also in
   **View > Sector viewer** and works on an opened image without a valid FAT volume.
@@ -148,7 +166,8 @@ inside QEMU; no physical source is written by this test.
 - In Findings, **Left/Right** scroll long paths horizontally; reports retain the
   complete names even when they do not fit on the screen.
 - **P** in Findings opens the existing repair workflow for supported filesystem
-  issues: file lengths, chain damage, dot metadata/directory sizes, timestamps,
+  issues: file lengths, chain damage, cross-links (copied, not truncated), lost
+  clusters (adopted as `.CHK` files), dot metadata/directory sizes, timestamps,
   reserved FAT headers, FAT-copy disagreements, FSInfo, and backup/primary boot
   metadata. The footer advertises this action only when available. The preview
   covers the volume's applicable issues, not just the selected entry. It still
@@ -203,6 +222,128 @@ contents and overwrite refusal in QEMU. The same test supports `freedos` and
 `win98` and verifies that the inspected disk and original boot media are unchanged.
 
 ![MagicDisk About dialog](docs/about.png)
+
+## Automatic repair
+
+**Fix > Automatic repair** (or **F9**) and `--autofix` replace ScanDisk's
+`/AUTOFIX` and Norton Disk Doctor's automatic mode with journaled steps. A
+preview lists every repair that applies now; nothing is written:
+
+```
+MAGICDSK --drive D --autofix
+MAGICDSK --drive D --autofix --apply --journal A:\
+MAGICDSK HDD.IMG --partition 1 --autofix --surface --write-test --apply --journal C:\JNL
+```
+
+With `--apply` (or typing **FIX** in the TUI), each step is planned from the
+current metadata, saved to a new journal `MDFXnnnn.MDJ` in the given existing
+directory on another disk, written, verified, and followed by a fresh scan
+before the next plan. A failed write rolls back that step and stops; steps
+already committed keep their journals. Restore the journals newest first to
+undo the whole sequence exactly.
+
+Order: FAT headers; FAT copies (only when exactly one copy is self-consistent,
+or all candidates agree — otherwise use `--repair-fat N`); tree repair from a
+FAT copy under the same rule; cross-link copies; filesystem tree, directory
+chains, file chains and directory entries; extra dots, reserved attributes,
+labels, label text, name conflicts, invalid DOS names, invalid long names and
+timestamps; lost chains; FAT32 FSInfo; the backup boot sector; and finally
+bad-cluster retirement. Steps refused because other damage remains are retried
+after each commit; the final report lists those still refused.
+
+| Option | Effect |
+|---|---|
+| `--surface` | Read every volume sector first. Unreadable free clusters are marked bad; readable live clusters are relocated (directories and the FAT32 root included). Metadata failures are reported only. |
+| `--write-test` | Also write-test free space (implies `--surface`, needs `--apply`): every sector of every unowned free cluster is inverted, verified, restored and verified. Owned data, including cross-linked or invalid chains, is never written. Failing clusters are marked bad. |
+| `--salvage` | Allow lossy salvage of live-file clusters that stay unreadable after three attempts; missing sectors become zeros. Without it such clusters are reported as `BAD_UNRESOLVED`. |
+| `--lost-chains files\|free\|keep` | Adopt lost chains as `FILEnnnn.CHK` (default), free them like `--reclaim-lost`, or leave them for `--recover-lost` export. |
+
+Exit status: **0** clean after the run (or nothing to do), **1** issues remain
+or a preview has pending steps, **2** refused, cancelled, failed or incomplete.
+The `.CHK` timestamp is the current local DOS date and time and is stored in
+the journal so revalidation is deterministic. **Automatic + surface** in the
+Fix menu adds `--surface`; the TUI never salvages automatically.
+
+If a write test is interrupted (power loss), at most one free sector can be
+left inverted; it belongs to no file. Free-space contents are otherwise
+restored byte-for-byte, so deleted-file recovery remains possible.
+
+## CMOS check
+
+`MAGICDSK --cmos` (TUI **Fix > CMOS check**) reads the IBM AT CMOS registers
+and reports, without writing anything: a lost RTC battery (status D bit 7),
+POST diagnostic flags in register 0Eh (power loss, checksum, configuration,
+memory size, fixed disk, time), a setup checksum that does not match bytes
+10h–2Dh, impossible clock values in BCD or binary, 12- or 24-hour mode
+(including 29 February in non-leap years), unknown floppy types or an equipment
+byte that disagrees with them or with INT 13h, base memory that differs from
+INT 12h, and setup extended memory that differs from the POST count. Correct
+reported problems in the BIOS setup program.
+
+`MAGICDSK --cmos DUMP.BIN` checks a saved 128-byte register dump on any
+platform. `tests/test_cmos.c` covers each finding with synthetic dumps.
+
+## Copy cross-linked files
+
+`--repair-crosslinks` (TUI **Fix > Copy cross-linked files**, confirm with
+**COPY**) handles `CHAIN_SHARED` the way ScanDisk's "make copies" does, but
+without guessing. The first owner in traversal order keeps the shared
+clusters. Each later regular file keeps its private prefix and receives fresh
+copies of the shared clusters it referenced, up to its recorded length, taken
+from the lowest readable free clusters. Its start cluster is redirected when
+the very first cluster was shared. If the shared chain ends early, the length
+is reduced to the copied clusters. Names, LFNs, dates and attributes stay
+intact; FAT32 free counts are updated.
+
+Each source sector gets three read attempts; a persistently unreadable shared
+cluster refuses the plan (salvage or export it first). Cross-linked
+directories are left for **Repair filesystem tree**. The plan tolerates
+name-level findings, lengths, lost clusters and auxiliary metadata, but refuses
+FAT-copy disagreements, header damage and incomplete scans. Journal version 24
+records copied data sectors and links; undo revalidates the original ownership.
+
+```
+MAGICDSK FLOPPY.IMG --repair-crosslinks
+MAGICDSK FLOPPY.IMG --repair-crosslinks --apply --journal A:\XLINK.MDJ
+```
+
+## Convert lost chains to files
+
+`--convert-lost` (TUI **Fix > Convert lost chains**, confirm with **ADOPT**)
+creates a root-directory `FILEnnnn.CHK` entry for each lost chain, like
+CHKDSK `/F` and ScanDisk. Chain heads come first, then clusters reachable only
+through cycles or merges. A chain is terminated where it leaves the lost set,
+re-enters a cluster already adopted, or would exceed the 4 GiB FAT limit; the
+remainder becomes its own file. Lengths are whole clusters. Names skip every
+existing alias and long name in the root.
+
+Never-used root slots are used before deleted (`E5`) entries so undelete
+candidates survive; the directory end marker is preserved. A full FAT12/16 root
+is refused (export with `--recover-lost`, then `--reclaim-lost`); a full FAT32
+root gains one zeroed cluster. This requires a complete scan with no damage
+other than lost clusters and auxiliary metadata. Journal version 25 stores the
+DOS timestamp used for the entries.
+
+```
+MAGICDSK FLOPPY.IMG --convert-lost
+MAGICDSK FLOPPY.IMG --convert-lost --apply --journal A:\LOST.MDJ
+```
+
+`make -C src/magicdisk test` also builds `magicdisk-ui`, the real workspace
+(`ui.c`) with a scripted keyboard and an in-memory screen
+(`-DMAGICDISK_SCRIPTED_UI`). `tests/test_fix_ui.py` drives it through the Fix
+menu, F9, typed confirmations, cancellation, the **P** shortcut on
+`CHAIN_SHARED` and the CMOS item, and checks the resulting images and journals.
+QEMU tests remain the reference for real DOS video and keyboard behavior.
+
+`make -C src/magicdisk test` runs `tests/test_crosslinks.py` on FAT12/16/32:
+byte-exact contents of copied and adopted files, `fsck.fat` acceptance,
+autofix with each lost-chain policy, FAT32 root growth, full-root refusal and
+reverse-order undo. `tests/test_xlink_faults.c` fails every write position,
+the first flush, cancels preparation, changes metadata after preview, refuses
+unreadable shared data, and runs autofix with injected unreadable free and
+file clusters, salvage and a weak sector found by the write test, then undoes
+every journal back to the original image.
 
 ## Identify a cluster's file or directory
 
@@ -339,9 +480,11 @@ boot sector. Undo reconstructs the original root from the journal before checkin
 ownership. Invalid-timestamp clearing uses version 14. Reserved FAT-header
 repair uses version 15 and restricts records to the first sector of each selected
 FAT; undo revalidates the proposed headers and original ownership. This build
-restores all sixteen versions. File salvage uses version 16 and records a
+restores every journal version from 1 through 25. File salvage uses version 16 and records a
 128-bit mask of zero-filled source sectors in addition to the before/after
-records. Apply and undo reconstruct both the data and this mask.
+records. Apply and undo reconstruct both the data and this mask. Cross-link
+copies use version 24 and lost-chain adoption version 25 (see
+[Automatic repair](#automatic-repair)).
 
 ### Relocate a readable file cluster
 
@@ -372,7 +515,7 @@ failures still refuse relocation. Metadata reads used to establish ownership
 are not retried by this copying step.
 Export recoverable data before working on unreadable source clusters. Ordinary
 relocation never substitutes bytes; explicit file salvage is described below.
-Automatic retirement of every surface failure remains separate work.
+`--autofix --surface` retires every data-area surface failure automatically.
 
 `make -C src/magicdisk test-relocate-faults DOS_BOOT="..." DOS_KERNEL=msdos622`
 runs synthetic file and directory relocation faults under QEMU, including an

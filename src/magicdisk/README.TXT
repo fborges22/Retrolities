@@ -3,9 +3,12 @@ MAGICDISK 0.3 - DOS DEVELOPMENT BUILD
 Developer: Felipe Andrade Allemand Borges
 Part of the Retrolities project.
 
-MagicDisk inspects and repairs FAT12, FAT16 and FAT32 volumes. This is a
-development build, not yet a complete ScanDisk/Norton Disk Doctor replacement.
-Keep the recovery journal and export important files before repairing them.
+MagicDisk inspects and repairs FAT12, FAT16 and FAT32 volumes. It covers the
+core of ScanDisk and Norton Disk Doctor - one-step automatic repair, cross-link
+copies, lost chains saved as FILEnnnn.CHK, surface and write tests with bad
+cluster retirement - and adds verified journals that undo every repair.
+Compressed (DoubleSpace/DriveSpace/Stacker) volumes are not supported.
+Keep the recovery journals and export important files before repairing them.
 
 GETTING STARTED
 ---------------
@@ -27,13 +30,14 @@ F2 selects a primary or logical partition. GPT is not supported.
 
 KEYBOARD AND MAP
 ----------------
-  F10  Menus: Disk, Diagnose, View, Reports, Help
+  F10  Menus: Disk, Diagnose, View, Reports, Help, Fix
        Arrows navigate; Home/End select first/last; Enter opens; Esc closes.
        Page Up/Down move through long menus; both status bars stay visible.
   F2   Select a volume           F3  Check filesystem
   F4   Read every volume sector  F5  Allocation map
   F6   Findings                  F7  Save report
   F8   Read-only hex/ASCII sector viewer
+  F9   Automatic repair (Fix menu)
   Arrows  Select map blocks      +   Zoom in     -   Whole volume
   Enter   Block details; Enter again opens its first sector
   O       Cluster owner (map, View menu, or sector viewer)
@@ -56,6 +60,29 @@ a separate destination; directory owners and unknown owners have no R action.
 The findings list grows with available memory. If memory runs out, earlier
 findings remain available and the omitted count appears in the saved report.
 Report saving commits the file and refuses to overwrite an existing file.
+
+AUTOMATIC REPAIR (F9)
+---------------------
+Fix > Automatic repair plans every applicable repair in a safe order: FAT
+headers, FAT copies (only when one copy is unambiguous), cross-link copies,
+file/directory trees, directory entries, names, labels, long names, dates,
+lost chains, FSInfo and the backup boot sector. Review the pending steps,
+type FIX, then give an EXISTING directory on another disk for journals.
+Each step is journaled, written, verified and followed by a fresh plan.
+Journals are named MDFX0001.MDJ, MDFX0002.MDJ, ...; restore them newest
+first with Diagnose > Restore journal to undo the whole sequence.
+Automatic + surface also reads every sector. Unreadable free clusters are
+marked bad and readable copies of damaged file clusters are relocated.
+
+Fix > CMOS check reads the setup CMOS and reports a dead battery, POST error
+flags, a bad checksum, an invalid clock and floppy or memory mismatches. It
+never writes CMOS; correct problems in the BIOS setup program.
+
+Fix > Copy cross-linked files gives each later owner of a shared chain its
+own copy of the shared clusters (type COPY). The first owner is unchanged.
+Fix > Convert lost chains creates root FILEnnnn.CHK files for every lost
+chain (type ADOPT). Unused root slots are used before deleted entries so
+undelete candidates survive; a full FAT32 root gains one cluster.
 
 INSPECT, EXPORT, THEN REPAIR
 ---------------------------
@@ -170,6 +197,16 @@ Add --apply --journal HEADERS.MDJ after reviewing the preview.
 
 COMMAND LINE EXAMPLES
 ----------------------
+  MAGICDSK --drive D --autofix                 Preview every repair
+  MAGICDSK --drive D --autofix --apply --journal A:\
+  MAGICDSK --drive D --autofix --surface --write-test --apply --journal A:\
+      --write-test inverts and restores free-cluster sectors only.
+      --salvage also zero-fills unreadable sectors of live files.
+      --lost-chains files|free|keep chooses .CHK files (default), freeing
+      the clusters, or leaving lost chains untouched.
+  MAGICDSK --cmos                              Check CMOS setup (read-only)
+  MAGICDSK FLOPPY.IMG --repair-crosslinks --apply --journal A:\X.MDJ
+  MAGICDSK FLOPPY.IMG --convert-lost --apply --journal A:\L.MDJ
   MAGICDSK --help
   MAGICDSK --devices
   MAGICDSK --dos-map
