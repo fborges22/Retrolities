@@ -199,13 +199,55 @@ static void video_close(void)
     int386(0x10, &r, &r);
 }
 
-/* A single text-page transfer avoids clear/redraw flicker during progress. */
+/* Wait for the start of vertical retrace so the copy lands while the beam is
+   off-screen.  Both loops are bounded: some emulators and VMs never toggle
+   bit 3 of the input status register, and the UI must not hang there. */
+static void wait_retrace(void)
+{
+    unsigned long spin;
+
+    if (inp(0x3da) & 8)
+        return; /* already blanking: the short copy fits in what remains */
+    for (spin = 0; spin < 200000UL && !(inp(0x3da) & 8); spin++)
+        ;
+}
+
+/* Present the composed frame.  Screens compose fully into `canvas` and call
+   this once per frame; only cells that differ from what is already on screen
+   are written, one span per changed row, during vertical retrace. */
 static void flush(void)
 {
-    if (memcmp(canvas, previous, sizeof(canvas))) {
-        _fmemcpy(MK_FP(video_selector, 0), canvas, sizeof(canvas));
-        memcpy(previous, canvas, sizeof(canvas));
+    unsigned short __far *vram = MK_FP(video_selector, 0);
+    unsigned char first[25], last[25];
+    int row, dirty = 0;
+
+    for (row = 0; row < 25; row++) {
+        const unsigned short *now = canvas + row * 80, *was = previous + row * 80;
+        int a = 0, b = 79;
+
+        while (a < 80 && now[a] == was[a])
+            a++;
+        if (a == 80) {
+            first[row] = 1;
+            last[row] = 0; /* empty span */
+            continue;
+        }
+        while (now[b] == was[b])
+            b--;
+        first[row] = (unsigned char)a;
+        last[row] = (unsigned char)b;
+        dirty = 1;
     }
+    if (!dirty)
+        return;
+    wait_retrace();
+    for (row = 0; row < 25; row++)
+        if (first[row] <= last[row]) {
+            unsigned at = row * 80 + first[row], n = last[row] - first[row] + 1u;
+
+            _fmemcpy(vram + at, canvas + at, n * sizeof(canvas[0]));
+            memcpy(previous + at, canvas + at, n * sizeof(canvas[0]));
+        }
 }
 
 static int key(void)
@@ -534,6 +576,9 @@ static void draw_workspace(void)
              : "F2 Vol F3 Check F4 Surface F5 Map F6 Find F7 Save F8 Bytes F10 Menu Esc Exit");
 }
 
+/* Compose and present the bare workspace.  Overlay screens must call
+   draw_workspace() instead, paint on top, then flush() once; presenting the
+   workspace first would briefly show it under the overlay and flicker. */
 static void draw(void)
 {
     draw_workspace();
@@ -543,7 +588,7 @@ static void draw(void)
 static int modal(const char *title, const char **lines, unsigned count)
 {
     unsigned i;
-    draw();
+    draw_workspace();
     box(7, 5, 66, 15, title);
     for (i = 0; i < count && i < 10; i++)
         text(10, 7 + i, i == 0 ? BRIGHT : WORK, lines[i]);
@@ -562,7 +607,7 @@ static int prompt(const char *title, char *out, unsigned capacity)
     out[0] = 0;
     for (;;) {
         int k;
-        draw();
+        draw_workspace();
         box(5, 8, 70, 8, title);
         text(8, 10, WORK, "Enter a path or value. Esc cancels.");
         fill(8, 12, 64, ' ', FOCUS);
@@ -824,7 +869,7 @@ static void select_volume(void)
             top = selected;
         if (selected >= top + 10)
             top = selected - 9;
-        draw();
+        draw_workspace();
         box(5, 5, 70, 15, ui.candidates ? " DISCOVERED VOLUMES (READ ONLY) " : " SELECT VOLUME ");
         text(8, 7, CYAN, " #  Type    Start LBA      Sectors      Filesystem");
         for (i = top; i < ui.count && i < top + 10; i++) {
@@ -927,7 +972,7 @@ static void search_volumes(void)
             top = selected;
         if (selected >= top + 10)
             top = selected - 9;
-        draw();
+        draw_workspace();
         box(3, 4, 74, 19, " FOUND FAT VOLUMES - READ ONLY ");
         sprintf(line,
                 "%s: %u candidates. Contents may overlap or be stale.",
@@ -1003,7 +1048,7 @@ static void select_device(void)
             top = selected;
         if (selected >= top + 9)
             top = selected - 8;
-        draw();
+        draw_workspace();
         box(5, 4, 70, 17, " SELECT BIOS DEVICE ");
         text(8, 6, CYAN, "BIOS   Device");
         for (i = top; i <= count && i < top + 9; i++) {
@@ -1102,7 +1147,7 @@ static void findings(void)
         int k, marker = 0;
         dt_u32 sector, marker_sector = 0;
 
-        draw();
+        draw_workspace();
         box(2,
             4,
             76,
@@ -1383,7 +1428,7 @@ static void owner_view(dt_u32 sector)
     for (;;) {
         int k;
 
-        draw();
+        draw_workspace();
         box(2, 4, 76, 19, " CLUSTER OWNER ");
         sprintf(line,
                 "Cluster %lu  |  Selected disk LBA %lu",
@@ -1467,7 +1512,7 @@ static void sector_viewer(dt_u32 sector)
             readable = ui.disk.read(ui.disk.ctx, sector, bytes);
             reload = 0;
         }
-        draw();
+        draw_workspace();
         fill(0, 1, 80, ' ', CHROME);
         text(2, 1, CHROME, ui.source);
         box(0, 2, 80, 22, " READ-ONLY SECTOR VIEWER ");
@@ -3199,7 +3244,7 @@ static int review_link(const DtEbrLinkPlan *plan, int restore)
     int k;
 
     for (;;) {
-        draw();
+        draw_workspace();
         box(5, 3, 70, 19, restore ? " REVIEW EBR LINK UNDO " : " REVIEW EBR CHAIN LINK ");
         sprintf(line,
                 "Source EBR %lu -> target EBR %lu; %u volumes",
@@ -3333,7 +3378,7 @@ static int review_container(const DtContainerPlan *plan, int restore)
     int k;
 
     for (;;) {
-        draw();
+        draw_workspace();
         box(5, 3, 70, 19, restore ? " REVIEW CONTAINER UNDO " : " REVIEW EXTENDED CONTAINER ");
         sprintf(line,
                 "MBR slot %u; type %02X; %u recovered volumes",
@@ -3476,7 +3521,7 @@ static int review_record(const DtEbrRecordPlan *plan, int restore)
     int k;
 
     for (;;) {
-        draw();
+        draw_workspace();
         box(5, 3, 70, 19, restore ? " REVIEW WHOLE EBR UNDO " : " REVIEW WHOLE EBR RECORD ");
         sprintf(line,
                 "EBR %lu -> volume %lu; next EBR %lu",
