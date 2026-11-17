@@ -52,6 +52,7 @@ typedef struct {
     void *visit_ctx;
     Item *queue;
     size_t count, cap, head;
+    dt_u32 walk_shown; /* highest tree-walk progress reported, per mille */
 } Scan;
 
 typedef struct {
@@ -93,6 +94,25 @@ static int progress(Scan *s, const char *phase, dt_u32 done, dt_u32 total)
         return 0;
     }
     return 1;
+}
+
+/* The directory tree is walked breadth-first and its queue grows as each
+   directory is read, so head/count can fall when a large directory adds its
+   entries.  Report the walk on a fixed per-mille scale that never decreases;
+   it holds steady while newly found work is queued, then resumes. */
+#define WALK_SCALE 1000u
+
+static int walk_progress(Scan *s, const char *phase)
+{
+    if (s->count) {
+        /* head is advanced before an item is walked, so head - 1 are done. */
+        size_t finished = s->head ? s->head - 1 : 0;
+        dt_u32 now = (dt_u32)((dt_u64)finished * WALK_SCALE / s->count);
+
+        if (now > s->walk_shown)
+            s->walk_shown = now;
+    }
+    return progress(s, phase, s->walk_shown, WALK_SCALE);
 }
 
 static int used(Scan *s, dt_u32 c)
@@ -841,7 +861,7 @@ static int directory_sector(Scan *s, dt_u32 sector, Directory *d)
     unsigned i, attempt;
     dt_u32 location = s->v->start + sector;
 
-    if (!progress(s, "Directories", (dt_u32)s->head, (dt_u32)s->count))
+    if (!walk_progress(s, "Directories"))
         return 0;
     if (s->recover_directories && d->ended)
         return 1;
@@ -995,7 +1015,7 @@ static int walk(Scan *s, Item item)
     if (!c && !item.dir && !item.size)
         return !s->visit || s->visit(s->visit_ctx, &file);
     for (;;) {
-        if ((n & 31) == 0 && !progress(s, "File chains", (dt_u32)s->head, (dt_u32)s->count))
+        if ((n & 31) == 0 && !walk_progress(s, "File chains"))
             goto failed;
         if (c < 2 || c >= v->clusters + 2) {
             file.ending = DT_CHAIN_RANGE;
