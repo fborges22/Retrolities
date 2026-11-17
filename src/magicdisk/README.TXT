@@ -37,7 +37,10 @@ KEYBOARD AND MAP
   F2   Select a volume           F3  Check filesystem
   F4   Read every volume sector  F5  Allocation map
   F6   Findings                  F7  Save report
-  F8   Read-only hex/ASCII sector viewer
+  F8   Hex/ASCII sector viewer (read-only until E or I)
+       K cluster  Space mark  C whole clusters  X export  I import
+       E edit: hex digits, Tab text, Bksp undo byte, F2 write, F3 revert
+       Writes need review, typed WRITE and a journal; Disk > Undo sector edit
   F9   Automatic repair (Fix menu)
   Arrows  Select map blocks      +   Zoom in     -   Whole volume
   Enter   Block details; Enter again opens its first sector

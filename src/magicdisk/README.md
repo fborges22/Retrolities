@@ -3,7 +3,8 @@
 MagicDisk is a DOS disk diagnosis and repair utility for FAT12, FAT16 and
 FAT32. It has a keyboard-driven 80-column TUI with a partition selector,
 cancellable diagnostics, allocation and surface maps, menus, a status bar, a
-findings browser and a read-only hex/ASCII sector viewer. Developer: **Felipe
+findings browser and a hex/ASCII sector viewer with cluster selection, raw
+export/import and a journaled byte editor. Developer: **Felipe
 Andrade Allemand Borges**.
 
 It covers the core of what ScanDisk and Norton Disk Doctor do — one-step
@@ -157,8 +158,9 @@ inside QEMU; no physical source is written by this test.
   repair with one journal per step. The **Fix** menu also offers automatic
   repair with a surface scan, cross-link copies and lost-chain conversion.
 - **O** opens the cluster-owner viewer; **View > Cluster owner** offers the same action.
-- **F8** opens the read-only sector viewer at the selected block. It is also in
+- **F8** opens the sector viewer at the selected block. It is also in
   **View > Sector viewer** and works on an opened image without a valid FAT volume.
+  It starts read-only; selection, export, import and editing are described below.
 - **Arrows** select map blocks; **Enter** shows counts and ranges. Enter again
   opens that block's first sector; **+** zooms
   into an allocation region; **-** returns to the full allocation map.
@@ -184,9 +186,60 @@ last sector, and G accepts a decimal LBA or a `0x` hexadecimal LBA. These are
 absolute sector numbers within the opened source: a BIOS disk includes its MBR
 and all partitions, whereas a DOS drive starts at that volume's sector zero.
 R rereads the sector; a failed read clears the byte display and offers retry.
-Esc returns to the map. The viewer has no editing or write operation.
+Esc returns to the map. The header names the region holding the sector: the
+partition table, volume boot sector, reserved/FAT metadata, fixed root
+directory, or `Cluster N [i/spc]` for data sectors of the mounted volume.
 
 ![MagicDisk read-only sector viewer](docs/sector-viewer.png)
+
+### Select, export and import sectors or clusters
+
+| Key | Action |
+| --- | --- |
+| **K** | Go to a data cluster (decimal or `0x` hex) of the mounted volume. |
+| **Space** | Start a selection at the current sector; moving with PgUp/PgDn, Home/End, G or K extends it. Space again clears it. |
+| **C** | Snap the selection (or the current sector) outward to whole clusters. Press C, PgDn, C to add the next cluster. |
+| **X** | Export the selection, or the current sector, to a new raw file. |
+| **I** | Import a raw file into the selection, or starting at the current sector. |
+
+The selection line shows its LBA range, sector count and cluster range. Export
+reads only; it refuses to replace an existing file, removes a partial file
+after a read error or Esc, and, for BIOS and DOS-drive sources, requires a
+destination on a different disk or volume. An import file must be a nonzero
+multiple of 512 bytes. With a selection, its length must equal the selection
+exactly; without one, its length decides how many sectors are replaced
+starting at the current sector. One import replaces at most 2048 sectors
+(1 MiB). A file identical to the disk contents is refused as a no-op.
+
+### Edit sector bytes
+
+**E** enters edit mode on a readable sector (the box title becomes
+`SECTOR EDITOR`). Arrows move the cursor across both 256-byte pages; type hex
+digits in the hex pane, or press **Tab** to type printable text in the ASCII
+pane. Changed bytes are highlighted and counted in the header. **Backspace**
+steps back and restores that byte, **F3** discards all edits and rereads the
+sector, and **Esc** leaves edit mode (asking first if edits are pending).
+PgUp/PgDn/Home/End are refused while edits are pending. Edits stay in memory
+until **F2**.
+
+### Writing and undoing raw edits
+
+F2 (edit) and I (import) share one write path: a review of the LBA range, its
+region, and how many sectors and bytes change; typing `WRITE`; and a new
+journal file (on a separate disk for BIOS and DOS-drive sources). MagicDisk
+then reopens the source for writing, rereads every sector and refuses if any
+changed since the review, saves and verifies an `MDRAW001` journal holding
+LBA 0 and every sector's original and new bytes, writes and verifies only the
+changed sectors, and rolls back on any failure. The source is reopened
+read-only and the selected volume remounted afterwards.
+
+Raw writes bypass every filesystem consistency check; run a filesystem check
+afterwards if FAT metadata or directories were touched. **Disk > Undo sector
+edit** restores a journal's original bytes when every sector still holds its
+saved before or after bytes. **Disk > Undo interrupted edit** additionally
+accepts byte-level mixtures of the two after a crash. Both refuse unrelated
+later changes, a different disk size or a changed LBA 0. With BIOS access,
+a range touching LBA 0 must be LBA 0 alone, matching the MBR write guard.
 
 The allocation map aggregates FAT entries into 384 blocks. Cyan squares are
 allocated, green dots are free, shading indicates mixed allocation, amber Xs are
@@ -405,6 +458,10 @@ MAGICDSK FLOPPY.IMG --convert-lost --apply --journal A:\LOST.MDJ
 (`-DMAGICDISK_SCRIPTED_UI`). `tests/test_fix_ui.py` drives it through the Fix
 menu, F9, typed confirmations, cancellation, the **P** shortcut on
 `CHAIN_SHARED` and the CMOS item, and checks the resulting images and journals.
+`tests/test_sector_editor_ui.py` drives the sector viewer's cluster selection,
+export, import size checks, editor, cancelled and journaled writes, and plain
+and interrupted undo. `tests/test_raw_journal.c` covers the raw journal's
+refusals, rollback after write/verify failure, torn undo and checksum damage.
 QEMU tests remain the reference for real DOS video and keyboard behavior.
 
 `make -C src/magicdisk test` runs `tests/test_crosslinks.py` on FAT12/16/32:

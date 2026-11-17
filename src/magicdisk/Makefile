@@ -4,7 +4,7 @@ OBJ := $(ROOT)/build/dos/obj/magicdisk
 WATCOM ?= /opt/watcom
 WCC := $(WATCOM)/binl64/wcc386
 WLINK := $(WATCOM)/binl64/wlink
-SOURCES := main.c disk.c partition.c mbrjournal.c ebrjournal.c linkjournal.c containerjournal.c recordjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c xlink.c autofix.c cmos.c cvf.c cvfrepair.c ui.c
+SOURCES := main.c disk.c partition.c mbrjournal.c rawjournal.c ebrjournal.c linkjournal.c containerjournal.c recordjournal.c scan.c map.c bios.c dosraw.c bad.c repair.c journal.c recover.c text.c xlink.c autofix.c cmos.c cvf.c cvfrepair.c ui.c
 OBJECTS := $(SOURCES:%.c=$(OBJ)/%.obj)
 .PHONY: dos host test test-dos
 dos: $(OUT)
@@ -94,6 +94,9 @@ test: host test-mbr test-ebr test-ebr-link test-container test-record
 	$(CC) -std=c99 -Wall -Wextra -Werror -g -DMAGICDISK_CVF_FAULTS $(SOURCES) -o $(ROOT)/build/host/magicdisk-cvf-faults
 	python3 tests/test_cvf_repair.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-cvf-faults
 	python3 tests/test_fix_ui.py $(ROOT)/build/host/magicdisk $(ROOT)/build/host/magicdisk-ui
+	python3 tests/test_sector_editor_ui.py $(ROOT)/build/host/magicdisk-ui
+	$(CC) -std=c99 -Wall -Wextra -Werror -g -I. tests/test_raw_journal.c disk.c rawjournal.c -o $(ROOT)/build/host/raw-journal-test
+	$(ROOT)/build/host/raw-journal-test $(ROOT)/build/host/raw-journal-test.mdj
 	python3 tests/test_tree.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_tree_relocation.py $(ROOT)/build/host/magicdisk
 	python3 tests/test_tree_source.py $(ROOT)/build/host/magicdisk

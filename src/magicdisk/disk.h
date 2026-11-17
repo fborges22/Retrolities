@@ -300,6 +300,31 @@ typedef struct {
     DtPatch *patch;
 } DtPlan;
 
+/* Raw sector edits (sector viewer editor and import). One contiguous range of
+   absolute disk LBAs; the journal binds LBA 0 and every sector's before/after
+   bytes. Successful builders own patch memory: dt_raw_clear before reuse. */
+#define DT_RAW_MAX 2048U
+typedef struct {
+    DtDisk *disk;
+    dt_u32 disk_sectors, first;
+    unsigned count;
+    unsigned char identity[512];
+    DtPatch *patch;
+} DtRawPlan;
+
+/* Reads the current bytes as both before and after; edit patch[i].after. */
+int dt_raw_plan(DtDisk *disk, dt_u32 first, unsigned count, DtRawPlan *plan, char *err);
+void dt_raw_clear(DtRawPlan *plan);
+unsigned dt_raw_changed(const DtRawPlan *plan);
+/* Revalidates every before sector, persists and verifies the journal, then
+   writes only changed sectors; any failure rolls back what was written. */
+int dt_raw_apply(const DtRawPlan *plan, const char *journal, DtWriteProgress writing,
+                 void *writing_ctx, char *err);
+/* Read-only: loads a journal and checks it belongs to this disk. */
+int dt_raw_review_journal(DtDisk *disk, const char *journal, DtRawPlan *plan, char *err);
+int dt_raw_restore(DtDisk *disk, const char *journal, int allow_torn, DtWriteProgress writing,
+                   void *writing_ctx, char *err);
+
 typedef struct {
     dt_u32 marked, readable, failed, tested_sectors, failed_sectors;
     int complete;

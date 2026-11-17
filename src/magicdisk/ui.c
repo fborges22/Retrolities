@@ -261,7 +261,7 @@ static int key(void)
 #else
 /* Scripted host build of the real workspace for automated UI tests.
    MAGICDISK_KEYS names a script with one action per line:
-     f1..f10, up, down, left, right, home, end, pgup, pgdn, enter, esc, bs,
+     f1..f10, up, down, left, right, home, end, pgup, pgdn, enter, esc, bs, tab,
      type:TEXT (characters), key:C (one character),
      wait:TEXT (fail with status 3 unless the screen shows TEXT),
      absent:TEXT (fail unless the screen does not show TEXT).
@@ -343,7 +343,8 @@ static int key(void)
                  {"f10", KEY_F10},        {"up", NAV_UP},       {"down", NAV_DOWN},
                  {"left", NAV_LEFT},      {"right", NAV_RIGHT}, {"home", NAV_HOME},
                  {"end", NAV_END},        {"pgup", NAV_PGUP},   {"pgdn", NAV_PGDN},
-                 {"enter", 13},           {"esc", 27},          {"bs", 8}};
+                 {"enter", 13},           {"esc", 27},          {"bs", 8},
+                 {"tab", 9}};
     char line[256], screen[2026];
     unsigned i;
 
@@ -1493,67 +1494,547 @@ static void owner_view(dt_u32 sector)
     free(owner.path);
 }
 
+static int confirm_bios_write(void);
+
+/* Data cluster holding an absolute LBA, or zero outside the mounted volume's
+   data area. Index receives the sector's position within the cluster. */
+static dt_u32 lba_cluster(dt_u32 lba, unsigned *index)
+{
+    dt_u32 relative;
+
+    if (!ui.mounted || lba < ui.volume.start + ui.volume.data)
+        return 0;
+    relative = lba - ui.volume.start - ui.volume.data;
+    if (relative / ui.volume.spc >= ui.volume.clusters)
+        return 0;
+    if (index)
+        *index = (unsigned)(relative % ui.volume.spc);
+    return 2 + relative / ui.volume.spc;
+}
+
+static dt_u32 cluster_lba(dt_u32 cluster)
+{
+    return ui.volume.start + ui.volume.data + (cluster - 2) * ui.volume.spc;
+}
+
+static void describe_lba(dt_u32 lba, char *out)
+{
+    unsigned index;
+    dt_u32 cluster = lba_cluster(lba, &index), relative;
+
+    if (cluster) {
+        sprintf(out, "Cluster %lu [%u/%u]", (unsigned long)cluster, index + 1, ui.volume.spc);
+    } else if (ui.mounted && lba >= ui.volume.start && lba - ui.volume.start < ui.volume.total) {
+        relative = lba - ui.volume.start;
+        strcpy(out,
+               !relative                  ? "Volume boot sector"
+               : relative < ui.volume.fat  ? "Reserved metadata"
+               : relative < ui.volume.root ? "FAT metadata"
+               : relative < ui.volume.data ? "Fixed root directory"
+                                           : "Trailing volume space");
+    } else if (!lba && ui.bios != 2) {
+        strcpy(out, "Partition table / MBR");
+    } else {
+        strcpy(out, ui.mounted ? "Outside the selected volume" : "512 bytes");
+    }
+}
+
+/* BIOS writes enable either LBA 0 alone or a range that excludes it. */
+static int raw_range_allowed(dt_u32 first, dt_u32 count, char *notice)
+{
+    if (ui.bios == 1 && !first && count > 1) {
+        strcpy(notice, "BIOS edits touching LBA 0 must cover LBA 0 alone.");
+        return 0;
+    }
+    return 1;
+}
+
+/* Reopen the source writable for one raw transaction, then reopen it read-only
+   and remount the volume that was selected. Returns the transaction result. */
+static int raw_transaction(DtRawPlan *plan, const char *journal, int restore, int torn, char *err)
+{
+    DtDisk target;
+    DtDisk *source = plan->disk;
+    char path[128];
+    unsigned selected = ui.selected;
+    int bios = ui.bios, opened, ok;
+
+    strcpy(path, ui.source);
+    release_disk_handle();
+    ui.opened = ui.mounted = 0;
+    if (bios == 2)
+        opened = dt_dos_open(&target, ui.drive, journal, err);
+    else if (bios)
+        opened = dt_bios_open(&target, ui.drive, err);
+    else
+        opened = dt_image_open_write(&target, path, err);
+    ok = opened;
+    if (ok && bios == 1)
+        ok = plan->first ? dt_bios_enable_writes(&target, plan->first, plan->count, journal, err)
+                         : dt_bios_enable_mbr_write(&target, journal, err);
+    if (ok) {
+        plan->disk = &target;
+        ok = restore ? dt_raw_restore(&target, journal, torn, write_progress, NULL, err)
+                     : dt_raw_apply(plan, journal, write_progress, NULL, err);
+        plan->disk = source;
+    }
+    ui.busy = 0;
+    if (opened) {
+        if (bios == 2) {
+            if (!dt_dos_close(&target) && ok) {
+                ok = 0;
+                strcpy(err, "DOS flush/unlock failed; preserve journal and stop using this volume.");
+            }
+        } else if (bios) {
+            dt_bios_close(&target);
+        } else {
+            dt_image_close(&target);
+        }
+    }
+    if (open_disk(path, bios, ui.drive) && selected < ui.count && selected != ui.selected) {
+        ui.selected = selected;
+        mount_selected();
+    }
+    if (ok)
+        strcpy(ui.status,
+               restore ? "Original sectors restored and verified. Journal retained."
+                       : "Sector edit written and verified. Journal retained.");
+    else
+        strcpy(ui.status, err);
+    return ok;
+}
+
+/* Review, typed confirmation and journal for a raw edit built from the viewer. */
+static int raw_write_reviewed(DtRawPlan *plan, const char *what, char *notice)
+{
+    char range[128], place[48], counts[80], confirm[32], journal[128], err[160];
+    const char *lines[7];
+    unsigned i, j, changed = dt_raw_changed(plan);
+    dt_u32 bytes = 0;
+
+    for (i = 0; i < plan->count; i++)
+        for (j = 0; j < 512; j++)
+            bytes += plan->patch[i].before[j] != plan->patch[i].after[j];
+    describe_lba(plan->first, place);
+    if (plan->count == 1)
+        sprintf(range, "Disk LBA %lu: %s", (unsigned long)plan->first, place);
+    else
+        sprintf(range,
+                "Disk LBA %lu-%lu; starts at %s",
+                (unsigned long)plan->first,
+                (unsigned long)(plan->first + plan->count - 1),
+                place);
+    sprintf(counts,
+            "%u of %u sector%s change; %lu byte%s differ.",
+            changed,
+            plan->count,
+            plan->count == 1 ? "" : "s",
+            (unsigned long)bytes,
+            bytes == 1 ? "" : "s");
+    lines[0] = what;
+    lines[1] = range;
+    lines[2] = counts;
+    lines[3] = "";
+    lines[4] = "Raw writes bypass every filesystem consistency check.";
+    lines[5] = "The journal keeps the original bytes for undo:";
+    lines[6] = "Disk > Undo sector edit restores them.";
+    if (!modal(" REVIEW SECTOR WRITE ", lines, 7))
+        return 0;
+    if (!prompt(" TYPE WRITE TO CHANGE THESE SECTORS ", confirm, sizeof(confirm)) ||
+        strcmp(confirm, "WRITE")) {
+        strcpy(notice, "Write cancelled; no sectors written.");
+        return 0;
+    }
+    if (!prompt(" NEW JOURNAL FILE ON A SEPARATE DISK ", journal, sizeof(journal))) {
+        strcpy(notice, "Write cancelled; no sectors written.");
+        return 0;
+    }
+    if (!confirm_bios_write()) {
+        strcpy(notice, "Write cancelled; no sectors written.");
+        return 0;
+    }
+    if (!raw_transaction(plan, journal, 0, 0, err)) {
+        sprintf(notice, "%.75s", err);
+        return 0;
+    }
+    strcpy(notice, "Sector edit written and verified. Journal retained.");
+    return 1;
+}
+
+static void export_sectors(dt_u32 first, dt_u32 count, char *notice)
+{
+    unsigned char buffer[512];
+    char path[128], title[80], saved[160];
+    dt_u32 i;
+    FILE *file;
+    int ok = 1;
+
+    sprintf(title,
+            " EXPORT LBA %lu-%lu TO A NEW FILE ",
+            (unsigned long)first,
+            (unsigned long)(first + count - 1));
+    if (!prompt(title, path, sizeof(path)))
+        return;
+    if (ui.bios && ui.disk.separate_destination &&
+        !ui.disk.separate_destination(ui.disk.ctx, path)) {
+        strcpy(notice,
+               ui.bios == 1 ? "Export to a different physical disk."
+                            : "Export to a different volume from the source.");
+        return;
+    }
+    file = dt_file_create(path);
+    if (!file) {
+        strcpy(notice, "Cannot create export file; existing files are preserved.");
+        return;
+    }
+    strcpy(saved, ui.status);
+    strcpy(ui.status, "Exporting raw sectors. Esc cancels and removes the partial file.");
+    ui.busy = 1;
+    for (i = 0; ok && i < count; i++) {
+        if (!(i & 63) && !progress(NULL, "Export sectors", i, count)) {
+            strcpy(notice, "Export cancelled; partial file removed.");
+            ok = 0;
+        } else if (!ui.disk.read(ui.disk.ctx, first + i, buffer)) {
+            sprintf(notice, "Read failed at LBA %lu; partial file removed.", (unsigned long)(first + i));
+            ok = 0;
+        } else if (fwrite(buffer, 1, 512, file) != 512) {
+            strcpy(notice, "Export write failed; partial file removed.");
+            ok = 0;
+        }
+    }
+    if (ok && !dt_file_commit(file)) {
+        strcpy(notice, "Export could not be committed; partial file removed.");
+        ok = 0;
+    }
+    if (fclose(file) && ok) {
+        strcpy(notice, "Export could not be closed; partial file removed.");
+        ok = 0;
+    }
+    ui.busy = 0;
+    strcpy(ui.status, saved);
+    if (!ok)
+        remove(path);
+    else
+        sprintf(notice,
+                "Exported %lu sector%s (%lu bytes). Disk unchanged.",
+                (unsigned long)count,
+                count == 1 ? "" : "s",
+                (unsigned long)count * 512);
+}
+
+/* A selection must match the file exactly; otherwise the file starts at the
+   current sector and its length decides how many sectors are replaced. */
+static int import_sectors(dt_u32 first, dt_u32 count, int selected, char *notice)
+{
+    DtRawPlan plan;
+    char path[128], what[80], err[160];
+    const char *name;
+    FILE *file;
+    long size;
+    dt_u32 sectors, i;
+    int ok;
+
+    if (!prompt(" IMPORT RAW SECTORS FROM FILE ", path, sizeof(path)))
+        return 0;
+    file = fopen(path, "rb");
+    if (!file) {
+        strcpy(notice, "Cannot open the import file.");
+        return 0;
+    }
+    size = fseek(file, 0, SEEK_END) ? -1 : ftell(file);
+    if (size <= 0 || size % 512 || fseek(file, 0, SEEK_SET)) {
+        fclose(file);
+        strcpy(notice, "Import file size must be a nonzero multiple of 512 bytes.");
+        return 0;
+    }
+    sectors = (dt_u32)(size / 512);
+    if (selected && sectors != count) {
+        fclose(file);
+        sprintf(notice,
+                "File holds %lu sector%s; the selection holds %lu.",
+                (unsigned long)sectors,
+                sectors == 1 ? "" : "s",
+                (unsigned long)count);
+        return 0;
+    }
+    if (sectors > DT_RAW_MAX) {
+        fclose(file);
+        sprintf(notice, "One import may replace at most %u sectors.", DT_RAW_MAX);
+        return 0;
+    }
+    if (sectors > ui.disk.sectors - first) {
+        fclose(file);
+        strcpy(notice, "Import file extends past the last disk sector.");
+        return 0;
+    }
+    if (!raw_range_allowed(first, sectors, notice)) {
+        fclose(file);
+        return 0;
+    }
+    if (!dt_raw_plan(&ui.disk, first, (unsigned)sectors, &plan, err)) {
+        fclose(file);
+        sprintf(notice, "%.75s", err);
+        return 0;
+    }
+    ok = 1;
+    for (i = 0; ok && i < sectors; i++)
+        ok = fread(plan.patch[i].after, 1, 512, file) == 512;
+    fclose(file);
+    if (!ok) {
+        dt_raw_clear(&plan);
+        strcpy(notice, "Cannot read the import file.");
+        return 0;
+    }
+    if (!dt_raw_changed(&plan)) {
+        dt_raw_clear(&plan);
+        strcpy(notice, "File matches the current sectors; nothing to write.");
+        return 0;
+    }
+    name = strrchr(path, '\\');
+    if (!name)
+        name = strrchr(path, '/');
+    name = name ? name + 1 : path;
+    sprintf(what, "Import %.36s: %lu sector%s", name, (unsigned long)sectors, sectors == 1 ? "" : "s");
+    ok = raw_write_reviewed(&plan, what, notice);
+    dt_raw_clear(&plan);
+    return ok;
+}
+
+static int hex_digit(int k)
+{
+    if (k >= '0' && k <= '9')
+        return k - '0';
+    if (k >= 'a' && k <= 'f')
+        return k - 'a' + 10;
+    if (k >= 'A' && k <= 'F')
+        return k - 'A' + 10;
+    return -1;
+}
+
+/* Hex/ASCII viewer with sector-range selection, raw export/import and an
+   in-memory byte editor. Every disk write goes through raw_write_reviewed. */
 static void sector_viewer(dt_u32 sector)
 {
-    unsigned char bytes[512];
-    unsigned page = 0, row, column;
-    int reload = 1, readable = 0;
-    char notice[80] = "";
+    unsigned char bytes[512], edit[512];
+    unsigned page = 0, row, column, cursor = 0, i;
+    int reload = 1, readable = 0, editing = 0, ascii = 0, nibble = 0, marked = 0;
+    dt_u32 anchor = 0;
+    char notice[160] = "";
 
     if (!ui.opened || !ui.disk.sectors)
         return;
     if (sector >= ui.disk.sectors)
         sector = 0;
     for (;;) {
-        char line[80];
+        char line[160], place[48];
+        unsigned dirty = 0;
+        dt_u32 low = marked && anchor < sector ? anchor : sector;
+        dt_u32 high = marked && anchor > sector ? anchor : sector;
+        dt_u32 previous = sector;
         int k;
 
         if (reload) {
             readable = ui.disk.read(ui.disk.ctx, sector, bytes);
+            memcpy(edit, bytes, sizeof(edit));
+            nibble = 0;
             reload = 0;
+            if (editing && !readable) {
+                editing = 0;
+                strcpy(notice, "Unreadable sectors cannot be edited; edit mode closed.");
+            }
+        }
+        if (editing) {
+            for (i = 0; i < 512; i++)
+                dirty += edit[i] != bytes[i];
+            page = cursor / 256;
         }
         draw_workspace();
         fill(0, 1, 80, ' ', CHROME);
         text(2, 1, CHROME, ui.source);
-        box(0, 2, 80, 22, " READ-ONLY SECTOR VIEWER ");
-        sprintf(line,
-                "Disk LBA %lu / %lu  |  Page %u/2  |  512 bytes",
-                (unsigned long)sector,
-                (unsigned long)(ui.disk.sectors - 1),
-                page + 1);
+        box(0, 2, 80, 22, editing ? " SECTOR EDITOR " : " READ-ONLY SECTOR VIEWER ");
+        describe_lba(sector, place);
+        if (editing)
+            sprintf(line,
+                    "Disk LBA %lu / %lu  |  Page %u/2  |  Offset %03X  |  %u changed",
+                    (unsigned long)sector,
+                    (unsigned long)(ui.disk.sectors - 1),
+                    page + 1,
+                    cursor,
+                    dirty);
+        else
+            sprintf(line,
+                    "Disk LBA %lu / %lu  |  Page %u/2  |  %s",
+                    (unsigned long)sector,
+                    (unsigned long)(ui.disk.sectors - 1),
+                    page + 1,
+                    place);
         text(3, 3, BRIGHT, line);
         text(3, 4, CYAN, "Off");
         text(8, 4, CYAN, "Hexadecimal bytes");
         text(58, 4, CYAN, "ASCII");
+        if (editing)
+            text(66, 4, FOCUS, ascii ? " EDIT TEXT " : " EDIT HEX ");
+        else if (marked && sector >= low && sector <= high)
+            text(66, 4, AMBER, " SELECTED ");
         if (readable) {
+            const unsigned char *shown = editing ? edit : bytes;
+
             for (row = 0; row < 16; row++) {
                 unsigned offset = page * 256 + row * 16;
 
                 sprintf(line, "%03X  ", offset);
                 for (column = 0; column < 16; column++)
-                    sprintf(line + 5 + column * 3, "%02X ", bytes[offset + column]);
+                    sprintf(line + 5 + column * 3, "%02X ", shown[offset + column]);
                 line[53] = line[54] = ' ';
                 for (column = 0; column < 16; column++) {
-                    unsigned value = bytes[offset + column];
+                    unsigned value = shown[offset + column];
 
                     line[55 + column] = value >= 32 && value <= 126 ? (char)value : '.';
                 }
                 line[71] = 0;
                 text(3, 5 + row, WORK, line);
+                if (!editing)
+                    continue;
+                for (column = 0; column < 16; column++) {
+                    unsigned at = offset + column;
+                    unsigned attr = at == cursor              ? FOCUS
+                                    : shown[at] != bytes[at] ? AMBER
+                                                             : 0;
+                    char hex[3];
+
+                    if (!attr)
+                        continue;
+                    sprintf(hex, "%02X", shown[at]);
+                    text(8 + column * 3, 5 + row, at == cursor && ascii ? AMBER : attr, hex);
+                    cell(58 + column, 5 + row, (unsigned char)line[55 + column],
+                         at == cursor && !ascii ? AMBER : attr);
+                }
             }
         } else {
             text(5, 11, RED, "Sector read failed. No bytes are shown. Press R to retry.");
         }
+        if (*notice) {
+            text(3, 21, AMBER, notice);
+        } else if (editing) {
+            text(3, 21, CYAN, "Arrows: move  Tab: hex/text  Bksp: undo byte  F2: write  F3: revert");
+        } else if (marked) {
+            dt_u32 first_cluster = lba_cluster(low, NULL), last_cluster = lba_cluster(high, NULL);
+
+            if (first_cluster && last_cluster)
+                sprintf(line,
+                        "Selected LBA %lu-%lu (%lu sectors, clusters %lu-%lu)  Space: clear",
+                        (unsigned long)low,
+                        (unsigned long)high,
+                        (unsigned long)(high - low + 1),
+                        (unsigned long)first_cluster,
+                        (unsigned long)last_cluster);
+            else
+                sprintf(line,
+                        "Selected LBA %lu-%lu (%lu sectors)  Space: clear",
+                        (unsigned long)low,
+                        (unsigned long)high,
+                        (unsigned long)(high - low + 1));
+            text(3, 21, BRIGHT, line);
+        } else {
+            text(3, 21, CYAN, "Left/Right: page  PgUp/PgDn: sector  Home/End  G: LBA  K: cluster");
+        }
         text(3,
-             21,
-             *notice ? AMBER : CYAN,
-             *notice ? notice : "Left/Right: byte page  PgUp/PgDn: sector  Home/End: disk bounds");
-        text(3, 22, CYAN, "G: go to disk LBA  R: reread  O: cluster owner  Esc: return");
+             22,
+             CYAN,
+             editing ? "Type hex digits, or text after Tab. Esc leaves edit mode."
+                     : "Space: mark  C: cluster  X: export  I: import  E: edit  R  O  Esc");
         fill(0, 24, 80, ' ', TITLE);
-        text(1, 24, TITLE, "Read-only inspection. No editing or disk writes.");
+        text(1,
+             24,
+             TITLE,
+             editing ? "EDIT MODE: changes stay in memory until F2 reviews and journals them."
+                     : "Read-only view. Writes need E or I, a review, typed WRITE and a journal.");
         flush();
         k = key();
         notice[0] = 0;
+        if (editing) {
+            int digit = ascii ? -1 : hex_digit(k);
+
+            if (k == 27) {
+                if (dirty) {
+                    const char *lines[] = {"The edited bytes have not been written.",
+                                           "Enter discards them. Esc keeps editing."};
+
+                    if (!modal(" DISCARD SECTOR EDITS ", lines, 2))
+                        continue;
+                }
+                memcpy(edit, bytes, sizeof(edit));
+                editing = 0;
+            } else if (k == 9) {
+                ascii = !ascii;
+                nibble = 0;
+            } else if (k == NAV_LEFT || k == 8) {
+                if (nibble)
+                    nibble = 0;
+                else if (cursor)
+                    cursor--;
+                if (k == 8)
+                    edit[cursor] = bytes[cursor];
+            } else if (k == NAV_RIGHT) {
+                nibble = 0;
+                if (cursor < 511)
+                    cursor++;
+            } else if (k == NAV_UP) {
+                nibble = 0;
+                if (cursor >= 16)
+                    cursor -= 16;
+            } else if (k == NAV_DOWN) {
+                nibble = 0;
+                if (cursor < 496)
+                    cursor += 16;
+            } else if (digit >= 0) {
+                edit[cursor] = (unsigned char)(nibble ? (edit[cursor] & 0xf0) | digit
+                                                      : (edit[cursor] & 0x0f) | (digit << 4));
+                if (nibble && cursor < 511)
+                    cursor++;
+                nibble = !nibble;
+            } else if (ascii && k >= 32 && k <= 126) {
+                edit[cursor] = (unsigned char)k;
+                if (cursor < 511)
+                    cursor++;
+            } else if (k == KEY_F1 + 2) {
+                reload = 1;
+                strcpy(notice, "Edits reverted; sector reread from disk.");
+            } else if (k == KEY_F1 + 1) {
+                DtRawPlan plan;
+                char err[160];
+
+                if (!dirty) {
+                    strcpy(notice, "No bytes changed; nothing to write.");
+                } else if (raw_range_allowed(sector, 1, notice) &&
+                           dt_raw_plan(&ui.disk, sector, 1, &plan, err)) {
+                    if (memcmp(plan.patch[0].before, bytes, 512)) {
+                        strcpy(notice, "Sector changed on disk since editing began; F3 rereads it.");
+                    } else {
+                        memcpy(plan.patch[0].after, edit, 512);
+                        sprintf(line, "Write %u edited byte%s", dirty, dirty == 1 ? "" : "s");
+                        if (raw_write_reviewed(&plan, line, notice))
+                            reload = 1;
+                    }
+                    dt_raw_clear(&plan);
+                    if (!ui.opened)
+                        return;
+                } else if (!*notice) {
+                    sprintf(notice, "%.75s", err);
+                }
+            } else if (k == NAV_PGUP || k == NAV_PGDN || k == NAV_HOME || k == NAV_END) {
+                if (dirty)
+                    strcpy(notice, "F2 writes or F3 reverts this sector before moving.");
+                else if (k == NAV_PGUP && sector)
+                    sector--;
+                else if (k == NAV_PGDN && sector + 1 < ui.disk.sectors)
+                    sector++;
+                else if (k == NAV_HOME || k == NAV_END)
+                    sector = k == NAV_HOME ? 0 : ui.disk.sectors - 1;
+                reload = sector != previous;
+            }
+            continue;
+        }
         if (k == 27)
             return;
         if (k == NAV_LEFT)
@@ -1572,6 +2053,61 @@ static void sector_viewer(dt_u32 sector)
             reload = 1;
         } else if (k == 'o' || k == 'O') {
             owner_view(sector);
+        } else if (k == ' ') {
+            marked = !marked;
+            anchor = sector;
+        } else if (k == 'c' || k == 'C') {
+            dt_u32 first_cluster = lba_cluster(low, NULL), last_cluster = lba_cluster(high, NULL);
+
+            if (!first_cluster || !last_cluster) {
+                strcpy(notice, "C needs sectors inside the mounted volume's data clusters.");
+            } else {
+                marked = 1;
+                anchor = cluster_lba(first_cluster);
+                sector = cluster_lba(last_cluster) + ui.volume.spc - 1;
+                page = 0;
+                reload = sector != previous;
+            }
+        } else if (k == 'x' || k == 'X') {
+            export_sectors(low, high - low + 1, notice);
+        } else if (k == 'i' || k == 'I') {
+            if (import_sectors(low, high - low + 1, marked, notice)) {
+                marked = 0;
+                reload = 1;
+            }
+            if (!ui.opened)
+                return;
+        } else if (k == 'e' || k == 'E') {
+            if (!readable) {
+                strcpy(notice, "Unreadable sectors cannot be edited; R retries the read.");
+            } else {
+                editing = 1;
+                marked = 0;
+                ascii = nibble = 0;
+                cursor = page * 256;
+                reload = 1;
+            }
+        } else if (k == 'k' || k == 'K') {
+            char input[32];
+            dt_u32 value;
+
+            if (!ui.mounted) {
+                strcpy(notice, "Cluster navigation needs a mounted FAT volume.");
+                continue;
+            }
+            if (!prompt(" GO TO DATA CLUSTER ", input, sizeof(input)))
+                continue;
+            if (!dt_parse_u32(input, !strncmp(input, "0x", 2) || !strncmp(input, "0X", 2) ? 16 : 10,
+                              &value) ||
+                value < 2 || value - 2 >= ui.volume.clusters) {
+                sprintf(notice,
+                        "Invalid cluster; enter 2 through %lu.",
+                        (unsigned long)(ui.volume.clusters + 1));
+                continue;
+            }
+            sector = cluster_lba(value);
+            page = 0;
+            reload = 1;
         } else if (k == 'g' || k == 'G') {
             char input[32];
             dt_u32 value;
@@ -1590,6 +2126,51 @@ static void sector_viewer(dt_u32 sector)
             reload = 1;
         }
     }
+}
+
+/* Undo a sector-viewer edit or import from its journal. */
+static void raw_undo(int torn)
+{
+    DtRawPlan plan;
+    char journal[128], confirm[32], err[160], range[80], place[48];
+    const char *lines[5];
+
+    if (torn) {
+        const char *warning[] = {"Restore original sectors after an interrupted edit.",
+                                 "Every current byte must match a saved before or after byte.",
+                                 "Other changes are refused.",
+                                 "Matching bytes alone do not prove a write was interrupted."};
+
+        if (!modal(" RECOVER INTERRUPTED SECTOR EDIT ", warning, 4))
+            return;
+    }
+    if (!prompt(" SECTOR EDIT JOURNAL TO RESTORE ", journal, sizeof(journal)))
+        return;
+    if (!dt_raw_review_journal(&ui.disk, journal, &plan, err)) {
+        strcpy(ui.status, err);
+        return;
+    }
+    describe_lba(plan.first, place);
+    sprintf(range,
+            "Disk LBA %lu-%lu (%u sector%s)",
+            (unsigned long)plan.first,
+            (unsigned long)(plan.first + plan.count - 1),
+            plan.count,
+            plan.count == 1 ? "" : "s");
+    lines[0] = range;
+    lines[1] = place;
+    lines[2] = torn ? "Allows only saved before/after byte mixtures."
+                    : "Each sector must hold its saved before or after bytes.";
+    lines[3] = "Later unrelated changes are refused. Journal is retained.";
+    if (!raw_range_allowed(plan.first, plan.count, ui.status) ||
+        !modal(" REVIEW SECTOR EDIT UNDO ", lines, 4) ||
+        !prompt(" TYPE RESTORE TO UNDO THE SECTOR EDIT ", confirm, sizeof(confirm)) ||
+        strcmp(confirm, "RESTORE") || !confirm_bios_write()) {
+        dt_raw_clear(&plan);
+        return;
+    }
+    raw_transaction(&plan, journal, 1, torn, err);
+    dt_raw_clear(&plan);
 }
 
 static void details(void)
@@ -3734,6 +4315,8 @@ enum {
     CVF_CHECK,
     SECTOR_VIEW,
     OWNER_VIEW,
+    UNDO_SECTORS,
+    UNDO_SECTORS_TORN,
     HELP,
     ABOUT
 };
@@ -3764,6 +4347,8 @@ static const MenuItem disk_menu[] = {
     {"Rebuild whole EBR...", REBUILD_RECORD},
     {"Undo whole EBR...", UNDO_RECORD},
     {"Undo interrupted record...", UNDO_RECORD_TORN},
+    {"Undo sector edit...", UNDO_SECTORS},
+    {"Undo interrupted edit...", UNDO_SECTORS_TORN},
     {"OEM code page...", OEM_CODEPAGE},
     {"Exit             Esc", QUIT},
     {NULL, 0},
@@ -3844,6 +4429,8 @@ static int enabled(int action)
         return ui.opened && ui.bios != 2;
     if (action == SEARCH_VOLUMES)
         return ui.opened && ui.bios != 2;
+    if (action == UNDO_SECTORS || action == UNDO_SECTORS_TORN)
+        return ui.opened && ui.disk.sectors;
     if (ui.candidates &&
         (action == MARK_BAD || action == UNMARK_BAD || action == RESTORE_JOURNAL ||
          action == RESTORE_TORN || action == RECOVER_PRIMARY_BOOT || action == REBUILD_FSINFO ||
@@ -3968,7 +4555,7 @@ static int action(int command)
                                  "",
                                  "F2 Volumes  F3 Filesystem check  F4 Surface read",
                                  "F5 Allocation map  F6 Findings  F7 Save report  F8 Bytes",
-                                 "",
+                                 "F8: Space marks, C cluster, X export, I import, E edits.",
                                  "Map: arrows select; Enter details; + zoom; - reset; T retest.",
                                  "Esc cancels an operation or closes a window.",
                                  "F9 Automatic repair: every fix journaled and verified.",
@@ -4032,6 +4619,12 @@ static int action(int command)
         break;
     case UNDO_RECORD_TORN:
         record_transaction(1, 1);
+        break;
+    case UNDO_SECTORS:
+        raw_undo(0);
+        break;
+    case UNDO_SECTORS_TORN:
+        raw_undo(1);
         break;
     case REBUILD_CONTAINER:
         container_transaction(0, 0);
