@@ -33,6 +33,11 @@ RUN grep -q 'if ( origWin == 0 ) {' /opt/mtcp/tcplib/tcp.cpp \
  && sed -i 's/if ( origWin == 0 ) {/if ( origWin < TcpSocketMgr::MSS_to_advertise ) {/' /opt/mtcp/tcplib/tcp.cpp \
  && grep -q 'origWin < TcpSocketMgr::MSS_to_advertise' /opt/mtcp/tcplib/tcp.cpp
 
+# NASM assembles Polaris' boot sectors, startup code and resident INT 13h driver.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends nasm \
+ && rm -rf /var/lib/apt/lists/*
+
 ENV WATCOM=/opt/watcom \
     MTCP=/opt/mtcp \
     INCLUDE=/opt/watcom/h \

@@ -8,7 +8,7 @@
 #   make help            list targets, projects and platforms
 
 PLATFORMS := dos win16 win9x winnt
-PROJECTS  ?= $(sort arrow magicdisk $(patsubst src/%/project.mk,%,$(wildcard src/*/project.mk)))
+PROJECTS  ?= $(sort arrow magicdisk polaris $(patsubst src/%/project.mk,%,$(wildcard src/*/project.mk)))
 TYPE      ?= console
 
 .PHONY: all $(PLATFORMS) msclient os2 win64 arrow-os2 arrow-win64 picasso-win64 clean list help new test
@@ -22,6 +22,8 @@ $(PLATFORMS):
 	    $(MAKE) --no-print-directory -C src/arrow $$target || exit 1; \
 	  elif [ "$$p" = magicdisk ]; then \
 	    if [ "$@" = dos ]; then $(MAKE) --no-print-directory -C src/magicdisk dos || exit 1; fi; \
+	  elif [ "$$p" = polaris ]; then \
+	    if [ "$@" = dos ]; then $(MAKE) --no-print-directory -C src/polaris dos || exit 1; fi; \
 	  else \
 	    $(MAKE) --no-print-directory -f mk/rules.mk DIR=src/$$p PLATFORM=$@ || exit 1; \
 	  fi; \
