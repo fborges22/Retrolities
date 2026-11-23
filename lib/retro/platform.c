@@ -14,6 +14,8 @@ const char *retro_target(void)
     return "MS-DOS";
 #elif defined(RETRO_WIN16)
     return "Windows 3.x";
+#elif defined(RETRO_WIN386)
+    return "Windows 3.x 386";
 #elif defined(RETRO_WIN64)
     return "Windows x64";
 #elif defined(RETRO_WIN9X)
@@ -32,7 +34,7 @@ char *retro_host(char *buf, unsigned size)
     DWORD v = GetVersion();
     unsigned major = LOBYTE(LOWORD(v));
     unsigned minor = HIBYTE(LOWORD(v));
-#if defined(RETRO_WIN16)
+#if defined(RETRO_WIN16) || defined(RETRO_WIN386)
     sprintf(tmp, "Windows %u.%02u", major, minor);
 #else
     /* The high bit is clear on the NT family only. */

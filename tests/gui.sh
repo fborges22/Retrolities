@@ -39,6 +39,12 @@ wine reg add 'HKCU\Control Panel\Colors' /v ActiveTitle /d '0 0 128' /f >/dev/nu
 wine reg add 'HKCU\Control Panel\Colors' /v Hilight /d '0 0 128' /f >/dev/null 2>&1
 wineserver -w
 shift; [ $# -gt 0 ] && shift
-wine explorer "/desktop=gui,${GUI_DESKTOP:-800x600}" "$exe" "$@" &
+# GUI_DESKTOP=none runs the program directly on the X screen (for Wine
+# versions whose virtual desktop does not paint under Xvfb).
+if [ "${GUI_DESKTOP:-}" = none ]; then
+    wine "$exe" "$@" &
+else
+    wine explorer "/desktop=gui,${GUI_DESKTOP:-800x600}" "$exe" "$@" &
+fi
 sleep "${GUI_WAIT:-12}"
 if [ -n "$script" ]; then . "$script"; else shot screen; fi

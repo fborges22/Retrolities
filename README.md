@@ -1,7 +1,7 @@
 # Retrolities
 
-Cross-compiled utilities for MS-DOS, OS/2 2.0+, Windows 3.x, Windows 9x,
-Windows NT/2000 and x64 Windows. The project uses Open Watcom v2 and MinGW-w64
+Cross-compiled utilities for MS-DOS, OS/2 2.0+, Windows 3.x (16-bit and
+32-bit), Windows 9x, Windows NT/2000 and x64 Windows. The project uses Open Watcom v2 and MinGW-w64
 in Docker.
 
 ## Quick start
@@ -9,6 +9,7 @@ in Docker.
 ```sh
 docker compose run --rm build                    # build all utilities and Arrow targets
 docker compose run --rm build make dos           # build one platform
+docker compose run --rm build make win386        # 32-bit Windows 3.x programs (ShellIV)
 docker compose run --rm build make win64         # Arrow and Picasso for x64 Windows
 docker compose run --rm build make help          # list targets
 docker compose run --rm test                     # format, smoke and protocol tests
@@ -34,8 +35,9 @@ The helper builds the Docker build image as needed and runs `make all`.
 The default archive is `build/retrolities.zip`. It contains only `.EXE` and
 `.COM` files from `build/<platform>/bin/`, all at the ZIP root. Unique 8.3
 names (such as `ARROWD.EXE`) are preserved. Duplicate names receive short
-platform suffixes: `D`, `2`, `16`, `9X`, `NT`, `64`; stems are shortened to
-keep 8.3 format (for example, `HELLO16.EXE` and `PICASSNT.EXE`). Any remaining
+platform suffixes: `D`, `2`, `16`, `386`, `9X`, `NT`, `64`; stems are shortened to
+keep 8.3 format (for example, `HELLO16.EXE`, `PICASSNT.EXE` and
+`SHELL386.EXE` for the `win386` build). Any remaining
 collisions receive a numeric suffix. Longer names are shortened while
 retaining platform suffixes (for example, `TOOLNAME64.EXE` becomes
 `TOOLNA64.EXE`). Renaming affects only ZIP entries, not
@@ -47,7 +49,7 @@ replaced only after both the build and packaging succeed.
 | Option | Purpose |
 |---|---|
 | `-o`, `--output PATH` | ZIP destination |
-| `-p`, `--platforms PLATFORM ...` | Build and package selected platforms: `dos`, `os2`, `win16`, `win9x`, `winnt`, `win64` |
+| `-p`, `--platforms PLATFORM ...` | Build and package selected platforms: `dos`, `os2`, `win16`, `win386`, `win9x`, `winnt`, `win64` |
 | `-e`, `--executables GLOB ...` | Package selected original filenames, case-insensitively; quote wildcards |
 | `--skip-build` | Package existing executables without Docker or compilers |
 | `--local` | Build with the locally configured toolchain instead of Docker |
@@ -78,6 +80,7 @@ python3 tools/build_pack.py --local
 |---|---|---|
 | [Arrow](#arrow) | DOS, OS/2, Windows 3.x/9x/NT, x64 Windows | TCP throughput tester |
 | [Picasso](#picasso) | Windows 3.x/9x/NT, Windows 11 x64 | Windows 95-style paint program |
+| [ShellIV](src/shelliv/README.md) | Windows 3.x (32-bit), Windows 9x/NT | Program Manager and File Manager replacement: themed sidebar with groups, favorites, folder tree and running tasks; icon, tile and detail views; preview pane; wastebasket; search by contents; shell mode |
 | [imgconv](#imgconv-and-libimgio) | All Open Watcom platforms | BMP, PNG, JPEG and TIFF converter |
 | [Polaris](src/polaris/README.md) | PC BIOS (386+), installer for DOS | Boot manager: themed TUI, partition hide/activate, drive swap, El Torito CD and ATAPI ZIP/LS-120 boot without BIOS support |
 | [MagicDisk](src/magicdisk/README.md) | DOS (386 protected mode) | FAT12/16/32 diagnosis and journaled repair: automatic fix, cross-links, lost chains, surface/write tests, partition recovery |
@@ -182,6 +185,7 @@ The common Open Watcom build system supports these platforms:
 |---|---|---|---|
 | `dos` | MS-DOS, real mode | `wcc` | 8086, small model (`t` produces `.COM`) |
 | `win16` | Windows 3.x | `wcc` | 286, large model |
+| `win386` | Windows 3.x, 386 Enhanced mode, 32-bit | `wcc386` | 386, flat model, Windows 386 extender (`wbind`) |
 | `win9x` | Windows 95/98/ME | `wcc386` | 386, ANSI API |
 | `winnt` | Windows NT 4.0 / 2000 | `wcc386` | Pentium-tuned, optional UNICODE |
 

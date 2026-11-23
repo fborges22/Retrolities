@@ -13,9 +13,9 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PLATFORMS = ("dos", "os2", "win16", "win9x", "winnt", "win64")
+PLATFORMS = ("dos", "os2", "win16", "win386", "win9x", "winnt", "win64")
 SUFFIXES = {
-    "dos": "D", "os2": "2", "win16": "16",
+    "dos": "D", "os2": "2", "win16": "16", "win386": "386",
     "win9x": "9X", "winnt": "NT", "win64": "64",
 }
 

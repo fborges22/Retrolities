@@ -1,0 +1,404 @@
+#include <windows.h>
+#include "resource.h"
+
+#ifndef BS_AUTO3STATE
+#define BS_AUTO3STATE 6
+#endif
+
+IDI_APP         ICON    "res/shelliv.ico"
+100             ICON    "res/folder.ico"
+101             ICON    "res/floppy.ico"
+102             ICON    "res/harddisk.ico"
+103             ICON    "res/cdrom.ico"
+104             ICON    "res/netdrive.ico"
+105             ICON    "res/computer.ico"
+106             ICON    "res/group.ico"
+107             ICON    "res/recent.ico"
+108             ICON    "res/star.ico"
+109             ICON    "res/doc.ico"
+110             ICON    "res/program.ico"
+111             ICON    "res/dosprog.ico"
+112             ICON    "res/text.ico"
+113             ICON    "res/image.ico"
+114             ICON    "res/waste.ico"
+115             ICON    "res/wastefull.ico"
+116             ICON    "res/search.ico"
+117             ICON    "res/sysfile.ico"
+118             ICON    "res/ramdisk.ico"
+119             ICON    "res/archive.ico"
+120             ICON    "res/music.ico"
+121             ICON    "res/shelliv.ico"
+
+IDB_GLYPHS      BITMAP  "res/glyphs.bmp"
+IDB_GLYPHSM     BITMAP  "res/glyphsm.bmp"
+
+IDC_DRAGMOVE    CURSOR  "res/dragmove.cur"
+IDC_DRAGCOPY    CURSOR  "res/dragcopy.cur"
+IDC_DRAGNO      CURSOR  "res/dragno.cur"
+IDC_DRAGLINK    CURSOR  "res/draglink.cur"
+
+IDR_MENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open\tEnter",                    IDM_OPEN
+        MENUITEM "&Run...\tCtrl+R",                 IDM_RUN
+        MENUITEM "Pri&nt",                          IDM_PRINT
+        MENUITEM "&Associate...",                   IDM_ASSOCIATE
+        MENUITEM SEPARATOR
+        MENUITEM "New &Folder\tCtrl+Shift+N",       IDM_NEWFOLDER
+        MENUITEM "New &Group...",                   IDM_NEWGROUP
+        MENUITEM "New &Program...",                 IDM_NEWPROG
+        MENUITEM SEPARATOR
+        MENUITEM "&Copy To...",                     IDM_COPYTO
+        MENUITEM "Mo&ve To...",                     IDM_MOVETO
+        MENUITEM "Rena&me\tF2",                     IDM_RENAME
+        MENUITEM "&Delete\tDel",                    IDM_DELETE
+        MENUITEM "Delete Permanen&tly\tShift+Del",  IDM_DELPERM
+        MENUITEM "Propert&ies\tAlt+Enter",          IDM_PROPS
+        MENUITEM SEPARATOR
+        MENUITEM "MS-DOS Prompt &Here",             IDM_DOSPROMPT
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit Windows...",                IDM_EXITWIN
+        MENUITEM "C&lose ShellIV\tAlt+F4",          IDM_EXIT
+    END
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "Cu&t\tCtrl+X",                    IDM_CUT
+        MENUITEM "&Copy\tCtrl+C",                   IDM_COPY
+        MENUITEM "&Paste\tCtrl+V",                  IDM_PASTE
+        MENUITEM SEPARATOR
+        MENUITEM "Select &All\tCtrl+A",             IDM_SELALL
+        MENUITEM "&Invert Selection",               IDM_INVERTSEL
+        MENUITEM "Select &Files...",                IDM_SELPAT
+    END
+    POPUP "&Disk"
+    BEGIN
+        MENUITEM "&Copy Disk...",                   IDM_COPYDISK
+        MENUITEM "&Label Disk...",                  IDM_LABELDISK
+        MENUITEM "&Format Disk...",                 IDM_FORMATDISK
+        MENUITEM SEPARATOR
+        MENUITEM "Co&nnect Network Drive...",       IDM_NETCONNECT
+        MENUITEM "&Disconnect Network Drive...",    IDM_NETDISC
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Icons\tCtrl+1",                  IDM_VICONS
+        MENUITEM "Ti&les\tCtrl+2",                  IDM_VTILES
+        MENUITEM "&Details\tCtrl+3",                IDM_VDETAILS
+        MENUITEM SEPARATOR
+        MENUITEM "Sort by &Name",                   IDM_SORTNAME
+        MENUITEM "Sort by T&ype",                   IDM_SORTTYPE
+        MENUITEM "Sort by &Size",                   IDM_SORTSIZE
+        MENUITEM "Sort by D&ate",                   IDM_SORTDATE
+        MENUITEM SEPARATOR
+        MENUITEM "&Preview Pane\tF3",               IDM_PREVIEW
+        MENUITEM "Show &Hidden Files",              IDM_HIDDEN
+        POPUP "&Theme"
+        BEGIN
+            MENUITEM "&Midnight",                   1100
+            MENUITEM "&Sunrise",                    1101
+            MENUITEM "&Forest",                     1102
+            MENUITEM "&Graphite",                   1103
+            MENUITEM "&Amethyst",                   1104
+            MENUITEM "&Classic",                    1105
+        END
+        MENUITEM SEPARATOR
+        MENUITEM "&Refresh\tF5",                    IDM_REFRESH
+    END
+    POPUP "&Go"
+    BEGIN
+        MENUITEM "&Back\tAlt+Left",                 IDM_BACK
+        MENUITEM "&Forward\tAlt+Right",             IDM_FORWARD
+        MENUITEM "&Up One Level\tBackspace",        IDM_UP
+        MENUITEM SEPARATOR
+        MENUITEM "&Programs",                       IDM_PROGRAMS
+        MENUITEM "&Recent Programs",                IDM_RECENT
+        MENUITEM "&My Computer",                    IDM_COMPUTER
+        MENUITEM "&Wastebasket",                    IDM_WASTE
+        MENUITEM "Running Tas&ks\tCtrl+T",          IDM_TASKS
+        MENUITEM SEPARATOR
+        MENUITEM "Go &To...\tCtrl+L",               IDM_GOTO
+        MENUITEM "F&ind Files...\tCtrl+F",          IDM_FIND
+        MENUITEM SEPARATOR
+        MENUITEM "Add to Fa&vorites\tCtrl+D",       IDM_ADDFAV
+    END
+    POPUP "&Programs"
+    BEGIN
+        MENUITEM "New &Group...",                   IDM_NEWGROUP
+        MENUITEM "New &Program...",                 IDM_NEWPROG
+        MENUITEM "&Rename Group...",                IDM_RENGROUP
+        MENUITEM "&Delete Group",                   IDM_DELGROUP
+        MENUITEM SEPARATOR
+        MENUITEM "&Import Program Manager Groups",  IDM_IMPORT
+    END
+    POPUP "&Tools"
+    BEGIN
+        MENUITEM "&Restore from Wastebasket",       IDM_RESTORE
+        MENUITEM "&Empty Wastebasket",              IDM_EMPTYWASTE
+        MENUITEM SEPARATOR
+        MENUITEM "&Options...",                     IDM_OPTIONS
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&Keyboard Shortcuts\tF1",         IDM_KEYS
+        MENUITEM SEPARATOR
+        MENUITEM "&About ShellIV...",               IDM_ABOUT
+    END
+END
+
+IDR_ACCEL ACCELERATORS
+BEGIN
+    "R",        IDM_RUN,        VIRTKEY, CONTROL
+    "N",        IDM_NEWFOLDER,  VIRTKEY, CONTROL, SHIFT
+    VK_F2,      IDM_RENAME,     VIRTKEY
+    VK_DELETE,  IDM_DELETE,     VIRTKEY
+    VK_DELETE,  IDM_DELPERM,    VIRTKEY, SHIFT
+    VK_RETURN,  IDM_PROPS,      VIRTKEY, ALT
+    "X",        IDM_CUT,        VIRTKEY, CONTROL
+    "C",        IDM_COPY,       VIRTKEY, CONTROL
+    "V",        IDM_PASTE,      VIRTKEY, CONTROL
+    "A",        IDM_SELALL,     VIRTKEY, CONTROL
+    "1",        IDM_VICONS,     VIRTKEY, CONTROL
+    "2",        IDM_VTILES,     VIRTKEY, CONTROL
+    "3",        IDM_VDETAILS,   VIRTKEY, CONTROL
+    VK_F3,      IDM_PREVIEW,    VIRTKEY
+    VK_F5,      IDM_REFRESH,    VIRTKEY
+    VK_F6,      IDM_NEXTPANE,   VIRTKEY
+    VK_F1,      IDM_KEYS,       VIRTKEY
+    VK_LEFT,    IDM_BACK,       VIRTKEY, ALT
+    VK_RIGHT,   IDM_FORWARD,    VIRTKEY, ALT
+    VK_BACK,    IDM_UP,         VIRTKEY
+    "L",        IDM_GOTO,       VIRTKEY, CONTROL
+    "F",        IDM_FIND,       VIRTKEY, CONTROL
+    "D",        IDM_ADDFAV,     VIRTKEY, CONTROL
+    "T",        IDM_TASKS,      VIRTKEY, CONTROL
+END
+
+STRINGTABLE
+BEGIN
+    IDM_OPEN,       "Opens the selected folder, or starts the program or document"
+    IDM_RUN,        "Runs a program, opens a document or folder by name"
+    IDM_NEWFOLDER,  "Creates a new folder here"
+    IDM_NEWGROUP,   "Creates a new program group"
+    IDM_NEWPROG,    "Adds a new program to the current group"
+    IDM_COPYTO,     "Copies the selection to another folder"
+    IDM_MOVETO,     "Moves the selection to another folder"
+    IDM_RENAME,     "Renames the selected item"
+    IDM_DELETE,     "Moves the selection to the Wastebasket"
+    IDM_DELPERM,    "Deletes the selection without using the Wastebasket"
+    IDM_PROPS,      "Shows size, dates and attributes of the selection"
+    IDM_DOSPROMPT,  "Opens an MS-DOS prompt in this folder"
+    IDM_PRINT,      "Prints the selected documents with their programs"
+    IDM_ASSOCIATE,  "Chooses the program that opens files of this type"
+    IDM_EXITWIN,    "Ends the Windows session"
+    IDM_EXIT,       "Closes ShellIV"
+    IDM_CUT,        "Marks the selected files to be moved by Paste"
+    IDM_COPY,       "Marks the selected files to be copied by Paste"
+    IDM_PASTE,      "Copies or moves the marked files into this folder"
+    IDM_SELALL,     "Selects every item"
+    IDM_INVERTSEL,  "Selects the items that are not selected, and the other way round"
+    IDM_SELPAT,     "Selects files whose names match a pattern"
+    IDM_VICONS,     "Shows large icons"
+    IDM_VTILES,     "Shows icons with details beside them"
+    IDM_VDETAILS,   "Shows a list with sortable columns"
+    IDM_SORTNAME,   "Sorts by name"
+    IDM_SORTTYPE,   "Sorts by type"
+    IDM_SORTSIZE,   "Sorts by size"
+    IDM_SORTDATE,   "Sorts by date"
+    IDM_PREVIEW,    "Shows or hides the preview pane"
+    IDM_HIDDEN,     "Shows or hides hidden and system files"
+    IDM_REFRESH,    "Reads the folder and drives again"
+    IDM_BACK,       "Goes back to the previous location"
+    IDM_FORWARD,    "Goes forward again"
+    IDM_UP,         "Goes to the parent folder"
+    IDM_PROGRAMS,   "Shows all program groups"
+    IDM_RECENT,     "Shows the programs you started last"
+    IDM_COMPUTER,   "Shows the drives of this computer"
+    IDM_WASTE,      "Shows deleted files that can still be restored"
+    IDM_COPYDISK,   "Copies a floppy disk with DISKCOPY"
+    IDM_LABELDISK,  "Changes the volume label of a drive"
+    IDM_FORMATDISK, "Formats a floppy disk with FORMAT"
+    IDM_NETCONNECT, "Connects a drive letter to a network share"
+    IDM_NETDISC,    "Disconnects a network drive"
+    IDM_TASKS,      "Selects the running programs in the sidebar: Enter switches to one"
+    IDM_GOTO,       "Type a folder, group or program in the address field"
+    IDM_FIND,       "Finds files by name and contents"
+    IDM_ADDFAV,     "Adds this folder to Favorites in the sidebar"
+    IDM_RENGROUP,   "Renames the current group"
+    IDM_DELGROUP,   "Deletes the current group"
+    IDM_IMPORT,     "Copies the groups of Program Manager into ShellIV"
+    IDM_RESTORE,    "Puts the selected files back where they were"
+    IDM_EMPTYWASTE, "Deletes everything in the Wastebasket for good"
+    IDM_OPTIONS,    "Theme, confirmations and shell settings"
+    IDM_KEYS,       "Lists the keyboard shortcuts"
+    IDM_ABOUT,      "Version and system information"
+    1100,           "Deep blue and teal"
+    1101,           "Warm crimson and amber"
+    1102,           "Greens of the forest"
+    1103,           "Dark grey with amber"
+    1104,           "Purple and orchid"
+    1105,           "The colours of Windows 3.1"
+END
+
+IDD_PROGRAM DIALOG 0, 0, 262, 116
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Program Properties"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "&Description:", -1, 8, 10, 64, 8
+    EDITTEXT        IDC_NAME, 76, 8, 128, 12, ES_AUTOHSCROLL
+    LTEXT           "&Command Line:", -1, 8, 28, 64, 8
+    EDITTEXT        IDC_CMD, 76, 26, 128, 12, ES_AUTOHSCROLL
+    LTEXT           "&Working Directory:", -1, 8, 46, 64, 8
+    EDITTEXT        IDC_DIR, 76, 44, 128, 12, ES_AUTOHSCROLL
+    LTEXT           "Shortcut &Key:", -1, 8, 64, 64, 8
+    EDITTEXT        IDC_HOTKEY, 76, 62, 128, 12, ES_AUTOHSCROLL
+    LTEXT           "", IDC_ICONBOX, 76, 80, 24, 24, NOT WS_VISIBLE
+    PUSHBUTTON      "Change &Icon...", IDC_CHICON, 106, 86, 62, 14
+    DEFPUSHBUTTON   "OK", IDOK, 212, 8, 44, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 212, 26, 44, 14
+    PUSHBUTTON      "&Browse...", IDC_BROWSE, 212, 44, 44, 14
+END
+
+IDD_INPUT DIALOG 0, 0, 220, 66
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ShellIV"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_PROMPT, 8, 8, 204, 16
+    EDITTEXT        IDC_EDIT, 8, 26, 204, 12, ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "OK", IDOK, 112, 46, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 164, 46, 48, 14
+END
+
+IDD_RUN DIALOG 0, 0, 244, 86
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Run"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Type the name of a program, folder or document:", -1, 8, 8, 228, 8
+    COMBOBOX        IDC_EDIT, 8, 20, 228, 90, CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_INFO, 8, 38, 228, 8
+    CONTROL         "Run &Minimized", IDC_MINRUN, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 8, 50, 90, 10
+    DEFPUSHBUTTON   "OK", IDOK, 84, 66, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 136, 66, 48, 14
+    PUSHBUTTON      "&Browse...", IDC_BROWSE, 188, 66, 48, 14
+END
+
+IDD_FIND DIALOG 0, 0, 252, 104
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Find Files"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "&Named:", -1, 8, 10, 60, 8
+    EDITTEXT        IDC_PATTERN, 70, 8, 124, 12, ES_AUTOHSCROLL
+    LTEXT           "&Containing text:", -1, 8, 28, 60, 8
+    EDITTEXT        IDC_TEXT, 70, 26, 124, 12, ES_AUTOHSCROLL
+    LTEXT           "&Look in:", -1, 8, 46, 60, 8
+    EDITTEXT        IDC_DIR, 70, 44, 124, 12, ES_AUTOHSCROLL
+    CONTROL         "Include &subfolders", IDC_SUBDIRS, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 70, 62, 124, 10
+    LTEXT           "Use * and ? as wildcards. Separate several patterns with ;  A name without wildcards matches names that contain it.",
+                    -1, 8, 78, 186, 22
+    DEFPUSHBUTTON   "&Find Now", IDOK, 200, 8, 46, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 26, 46, 14
+END
+
+IDD_PROPS DIALOG 0, 0, 232, 174
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Properties"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_ICONBOX, 8, 6, 24, 24, NOT WS_VISIBLE
+    LTEXT           "", IDC_NAME, 42, 14, 182, 10
+    LTEXT           "Type:", -1, 8, 40, 48, 8
+    LTEXT           "", IDC_TYPE, 60, 40, 164, 8
+    LTEXT           "Location:", -1, 8, 52, 48, 8
+    LTEXT           "", IDC_WHERE, 60, 52, 164, 8
+    LTEXT           "Size:", -1, 8, 64, 48, 8
+    LTEXT           "", IDC_FSIZE, 60, 64, 164, 8
+    LTEXT           "Contains:", IDC_CONTLBL, 8, 76, 48, 8
+    LTEXT           "", IDC_CONTENTS, 60, 76, 164, 8
+    LTEXT           "Modified:", -1, 8, 88, 48, 8
+    LTEXT           "", IDC_DATE, 60, 88, 164, 8
+    GROUPBOX        "Attributes", -1, 8, 104, 216, 42
+    CONTROL         "&Read-only", IDC_RDONLY, "BUTTON", BS_AUTO3STATE | WS_TABSTOP, 16, 116, 80, 10
+    CONTROL         "&Hidden", IDC_HIDDEN, "BUTTON", BS_AUTO3STATE | WS_TABSTOP, 16, 130, 80, 10
+    CONTROL         "&System", IDC_SYSTEM, "BUTTON", BS_AUTO3STATE | WS_TABSTOP, 116, 116, 80, 10
+    CONTROL         "&Archive", IDC_ARCHIVE, "BUTTON", BS_AUTO3STATE | WS_TABSTOP, 116, 130, 80, 10
+    DEFPUSHBUTTON   "OK", IDOK, 124, 154, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 176, 154, 48, 14
+END
+
+IDD_ABOUT DIALOG 0, 0, 236, 118
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About ShellIV"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_ICONBOX, 8, 8, 24, 24, NOT WS_VISIBLE
+    LTEXT           "ShellIV", -1, 44, 10, 180, 8
+    LTEXT           "", IDC_INFO, 44, 20, 184, 8
+    LTEXT           "Program Manager and File Manager in one window: groups, favorites, a folder tree, a wastebasket, search and previews.",
+                    -1, 44, 32, 184, 26
+    LTEXT           "", IDC_SYSINFO, 44, 62, 184, 16
+    LTEXT           "", IDC_MEMORY, 44, 80, 184, 8
+    LTEXT           "", IDC_RESOURCES, 44, 90, 184, 8
+    DEFPUSHBUTTON   "OK", IDOK, 180, 98, 48, 14
+END
+
+IDD_ICONS DIALOG 0, 0, 244, 118
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Change Icon"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "&File name:", -1, 8, 8, 170, 8
+    EDITTEXT        IDC_FILE, 8, 18, 176, 12, ES_AUTOHSCROLL
+    LTEXT           "", IDC_INFO, 8, 36, 176, 8
+    LISTBOX         IDC_ICONLIST, 8, 46, 176, 64, LBS_OWNERDRAWFIXED | LBS_MULTICOLUMN |
+                    LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_HSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 192, 8, 46, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 192, 26, 46, 14
+    PUSHBUTTON      "&Browse...", IDC_BROWSE, 192, 44, 46, 14
+END
+
+IDD_OPTIONS DIALOG 0, 0, 262, 150
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Options"
+FONT 8, "MS Sans Serif"
+BEGIN
+    GROUPBOX        "&Theme", -1, 8, 6, 116, 116
+    LISTBOX         IDC_THEMES, 14, 18, 104, 56, LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "", IDC_THEMEPREV, 14, 80, 104, 36, NOT WS_VISIBLE
+    GROUPBOX        "Options", -1, 130, 6, 124, 116
+    CONTROL         "Confirm &deleting files", IDC_CONFDEL, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 18, 114, 10
+    CONTROL         "Confirm &replacing files", IDC_CONFOPS, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 30, 114, 10
+    CONTROL         "&Minimize on use", IDC_MINIMIZE, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 42, 114, 10
+    CONTROL         "&Save settings on exit", IDC_SAVEEXIT, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 54, 114, 10
+    CONTROL         "Show &hidden files", IDC_SHOWHID, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 66, 114, 10
+    CONTROL         "Use as the &Windows shell", IDC_SHELL, "BUTTON", BS_AUTOCHECKBOX | WS_TABSTOP, 136, 84, 114, 10
+    DEFPUSHBUTTON   "OK", IDOK, 152, 130, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 206, 130, 48, 14
+END
+
+IDD_CONFIRM DIALOG 0, 0, 244, 80
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Confirm"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_PROMPT, 10, 10, 224, 40
+    DEFPUSHBUTTON   "&Yes", IDYES, 8, 58, 54, 14
+    PUSHBUTTON      "Yes to &All", IDC_YESALL, 66, 58, 54, 14
+    PUSHBUTTON      "&No", IDNO, 124, 58, 54, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 182, 58, 54, 14
+END
+
+IDD_PROGRESS DIALOG 0, 0, 240, 74
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION
+CAPTION "Working"
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "", IDC_FROM, 8, 8, 224, 8
+    LTEXT           "", IDC_TO, 8, 20, 224, 8
+    CONTROL         "", IDC_BAR, "ShellIVBar", WS_CHILD | WS_VISIBLE, 8, 34, 224, 10
+    PUSHBUTTON      "Cancel", IDCANCEL, 96, 54, 48, 14
+END

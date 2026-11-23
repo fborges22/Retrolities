@@ -147,12 +147,26 @@ libs:
 	done
 $(LIB_FILES): libs ;
 
+ifeq ($(BIND),)
 $(TARGET): $(OBJS) $(RES_FILE) $(LIB_FILES) | $(BIN_DIR)
 	$(call say,LINK,$@)
 	$(Q)wlink option quiet $(LDFLAGS_ALL) name $@ \
 	  option map=$(OBJ_DIR)/$(NAME).map \
 	  $(if $(RES_FILE),option resource=$(RES_FILE)) \
 	  $(addprefix file ,$(OBJS)) $(addprefix library ,$(LIB_FILES))
+else
+# Windows 386 extender: link a .REX image, then bind it to the supervisor.
+REX := $(OBJ_DIR)/$(shell echo $(NAME) | tr A-Z a-z)
+$(TARGET): $(OBJS) $(RES_FILE) $(LIB_FILES) | $(BIN_DIR)
+	$(call say,LINK,$(REX).rex)
+	$(Q)wlink option quiet $(LDFLAGS_ALL) name $(REX).rex \
+	  option map=$(OBJ_DIR)/$(NAME).map \
+	  $(addprefix file ,$(OBJS)) $(addprefix library ,$(LIB_FILES))
+	$(call say,BIND,$@)
+	$(Q)cd $(OBJ_DIR) && wbind $(notdir $(REX)) -q -s $(WATCOM)/binw/win386.ext \
+	  $(if $(RES_FILE),-R -q -bt=windows $(notdir $(RES_FILE)),-n)
+	$(Q)mv $(REX).exe $@
+endif
 
 endif
 

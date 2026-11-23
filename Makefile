@@ -1,13 +1,13 @@
 # Retrolities - top-level build driver (run inside the "build" container).
 #
 #   make                 build every project for every platform
-#   make dos             one platform: dos | win16 | win9x | winnt
+#   make dos             one platform: dos | win16 | win386 | win9x | winnt
 #   make os2             Arrow for OS/2 2.0+
 #   make PROJECTS=hello  restrict to some projects
 #   make V=1             show full compiler / linker command lines
 #   make help            list targets, projects and platforms
 
-PLATFORMS := dos win16 win9x winnt
+PLATFORMS := dos win16 win386 win9x winnt
 PROJECTS  ?= $(sort arrow magicdisk polaris $(patsubst src/%/project.mk,%,$(wildcard src/*/project.mk)))
 TYPE      ?= console
 
@@ -18,6 +18,7 @@ all: $(PLATFORMS) $(if $(filter arrow,$(PROJECTS)),arrow-os2 arrow-win64) \
 $(PLATFORMS):
 	@for p in $(PROJECTS); do \
 	  if [ "$$p" = arrow ]; then \
+	    [ "$@" != win386 ] || continue; \
 	    target=$@; [ "$$target" != win9x ] || target=win32; \
 	    $(MAKE) --no-print-directory -C src/arrow $$target || exit 1; \
 	  elif [ "$$p" = magicdisk ]; then \
