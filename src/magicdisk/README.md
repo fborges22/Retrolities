@@ -190,7 +190,7 @@ Esc returns to the map. The header names the region holding the sector: the
 partition table, volume boot sector, reserved/FAT metadata, fixed root
 directory, or `Cluster N [i/spc]` for data sectors of the mounted volume.
 
-![MagicDisk read-only sector viewer](docs/sector-viewer.png)
+![MagicDisk sector viewer with a two-cluster selection](docs/sector-viewer.png)
 
 ### Select, export and import sectors or clusters
 
@@ -221,6 +221,8 @@ steps back and restores that byte, **F3** discards all edits and rereads the
 sector, and **Esc** leaves edit mode (asking first if edits are pending).
 PgUp/PgDn/Home/End are refused while edits are pending. Edits stay in memory
 until **F2**.
+
+![MagicDisk sector editor with pending hex and text edits](docs/sector-editor.png)
 
 ### Writing and undoing raw edits
 

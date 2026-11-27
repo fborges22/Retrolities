@@ -27,6 +27,13 @@ export MTOOLSRC="$work/mtools"
 mmd c:/shelliv 2>/dev/null
 mcopy -o "$exe" c:/shelliv/
 mdel c:/windows/shelliv.ini 2>/dev/null
+# fixtures the tests below rely on: C:\TEMP and two X1*.TMP files
+mmd c:/temp 2>/dev/null
+mdel c:/temp/runmin.txt c:/temp/startup.txt c:/temp/sys2.ini 2>/dev/null
+printf 'x\r\n' > "$work/x1.tmp"
+mcopy -o "$work/x1.tmp" c:/temp/x1a.tmp
+mcopy -o "$work/x1.tmp" c:/temp/x1b.tmp
+mattrib -r c:/temp/x1a.tmp c:/temp/x1b.tmp
 mtype c:/windows/system.ini | sed 's/^shell=.*/shell=C:\\SHELLIV\\SHELLIV.EXE\r/I' > "$work/system.ini"
 mcopy -o "$work/system.ini" c:/windows/system.ini
 
@@ -102,9 +109,11 @@ k alt-d 2; k c 8; k ret 30; k ret 120; k ret 120; shot 14-diskcopy; k n 3; k ret
 # program, the desktop shows where the sidebar was
 k ctrl-l 2; k esc 3
 k alt-t 2; k o 8; k alt-m 2; k ret 8; shot 15-before
-convert "build/shots/w311-15-before.png" -format '%[pixel:p{150,600}]' info: > "$work/pixel0"
+# a sidebar pixel, 78% down the screen (works at 640x480 and 1024x768)
+probe="p{150,$(( $(identify -format %h build/shots/w311-15-before.png) * 78 / 100 ))}"
+convert "build/shots/w311-15-before.png" -format "%[pixel:$probe]" info: > "$work/pixel0"
 addr 'NOTEPAD.EXE'; sleep 15; k alt-f4 15; shot 15-minimized
-convert "build/shots/w311-15-minimized.png" -format '%[pixel:p{150,600}]' info: > "$work/pixel"
+convert "build/shots/w311-15-minimized.png" -format "%[pixel:$probe]" info: > "$work/pixel"
 # restore ShellIV (its icon has the focus after Notepad closes)
 k alt-spc 3; k r 10
 k alt-t 2; k o 8; k alt-m 2; k ret 8      # and switch the option off again
@@ -141,7 +150,8 @@ check "Format Disk (FORMAT A: on a blank floppy)" 'mdir -i "$work/a.img" :: >/de
 check "Copy Disk (DISKCOPY A: A:) leaves a valid disk" 'mdir -i "$work/a.img" :: >/dev/null 2>&1'
 check "minimize on use (sidebar gone after starting a program)" \
     'echo "    sidebar pixel before: $(cat "$work/pixel0"), after: $(cat "$work/pixel")";
-     navy() { python3 -c "import re,sys; v=[int(x) for x in re.findall(r\"\d+\", open(sys.argv[1]).read())][:3]; sys.exit(0 if len(v)==3 and v[0]<60 and v[1]<70 and 30<v[2]<90 else 1)" "$1"; }
-     navy "$work/pixel0" && ! navy "$work/pixel"'
+     # the sidebar is dark (navy at 256 colours, black at 16), the desktop is not
+     dark() { python3 -c "import re,sys; v=[int(x) for x in re.findall(r\"\d+\", open(sys.argv[1]).read())][:3]; sys.exit(0 if len(v)==3 and max(v)<90 else 1)" "$1"; }
+     dark "$work/pixel0" && ! dark "$work/pixel"'
 check "StartUp group runs when ShellIV is the shell" 'mtype c:/temp/startup.txt | grep -aq START'
 exit $fail
